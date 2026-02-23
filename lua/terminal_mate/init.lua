@@ -232,12 +232,12 @@ function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
 
-  -- Normal mode: send current line with Enter
+  -- Normal mode: send current line (default: <C-s>)
   vim.keymap.set("n", keymap.send_line, function()
     M.send_line()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current line" }))
 
-  -- Visual mode: send selection with Enter
+  -- Visual mode: send selection (default: <C-s>)
   vim.keymap.set("v", keymap.send_visual, function()
     -- Exit visual mode first so marks are set
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
@@ -246,19 +246,12 @@ function M._setup_buffer_keymaps(buf)
     end)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send visual selection" }))
 
-  -- Insert mode: send current line with Ctrl-Enter (or Enter)
-  vim.keymap.set("i", "<C-CR>", function()
+  -- Insert mode: send current line with the configured key (default: <C-s>)
+  vim.keymap.set("i", keymap.send_line, function()
     vim.cmd("stopinsert")
     M.send_line()
     vim.cmd("startinsert!")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send line (insert mode)" }))
-
-  -- Also map Enter in insert mode to send + stay in insert
-  vim.keymap.set("i", "<CR>", function()
-    vim.cmd("stopinsert")
-    M.send_line()
-    vim.cmd("startinsert!")
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send line (insert mode, Enter)" }))
 
   -- Clear terminal
   vim.keymap.set("n", keymap.clear, function()

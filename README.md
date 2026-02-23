@@ -44,7 +44,7 @@ Install the plugin with your favorite plugin manager.
 3.  This will create a new tmux pane above your Neovim session.
 4.  The current Neovim window will switch to a dedicated input buffer.
 5.  Type your command in the buffer.
-6.  Press `<CR>` in normal or insert mode to send the command to the terminal pane.
+6.  Press `Ctrl+S` in normal or insert mode to send the command to the terminal pane.
 
 ### Commands
 
@@ -61,10 +61,9 @@ These keymaps are active only in the special `terminal_mate` input buffer.
 
 | Keymap      | Mode          | Description                      |
 |-------------|---------------|----------------------------------|
-| `<CR>`      | Normal        | Send the current line            |
-| `<CR>`      | Insert        | Send the current line            |
-| `<C-CR>`    | Insert        | Send the current line            |
-| `<CR>`      | Visual        | Send the visual selection        |
+| `<C-s>`     | Normal        | Send the current line            |
+| `<C-s>`     | Insert        | Send the current line            |
+| `<C-s>`     | Visual        | Send the visual selection        |
 | `<C-l>`     | Normal        | Clear the terminal screen        |
 | `<C-c>`     | Normal        | Send an interrupt signal (Ctrl-C) |
 
@@ -97,8 +96,8 @@ require("terminal_mate").setup({
     close = "<leader>tc",
     toggle = "<leader>tt",
     -- The following keymaps are local to the input buffer
-    send_line = "<CR>",
-    send_visual = "<CR>",
+    send_line = '<C-s>',
+    send_visual = '<C-s>',
     clear = "<C-l>",
     interrupt = "<C-c>",
   },
