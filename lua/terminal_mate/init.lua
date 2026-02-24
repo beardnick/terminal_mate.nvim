@@ -176,9 +176,35 @@ local function send_to_terminal(text)
     end
   end
 
+  -- Smart multi-line send:
+  -- Lines ending with \ are shell continuation lines.
+  -- For these, send the line text + literal newline (not Enter),
+  -- so the shell sees it as one continuous command.
+  -- Only press Enter on the final line or non-continuation lines.
   local lines = vim.split(text, "\n", { plain = true, trimempty = false })
+
+  -- Group lines into command blocks:
+  -- A block is a sequence of continuation lines ending with a final line.
+  local blocks = {}
+  local current_block = {}
   for _, line in ipairs(lines) do
-    tmux.send_keys(state.terminal_pane_id, line, true)
+    table.insert(current_block, line)
+    -- Check if line ends with \ (continuation)
+    local trimmed = vim.trim(line)
+    if trimmed:sub(-1) ~= "\\" then
+      -- End of block
+      table.insert(blocks, table.concat(current_block, "\n"))
+      current_block = {}
+    end
+  end
+  -- If there are remaining lines (shouldn't happen normally)
+  if #current_block > 0 then
+    table.insert(blocks, table.concat(current_block, "\n"))
+  end
+
+  -- Send each block as a whole unit
+  for _, block in ipairs(blocks) do
+    tmux.send_text(state.terminal_pane_id, block, true)
   end
 end
 

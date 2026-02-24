@@ -64,6 +64,22 @@ function M.send_keys(pane_id, text, press_enter)
   end
 end
 
+--- Send a complete text block to a target pane using set-buffer + paste-buffer.
+--- This preserves multi-line commands with backslash continuations intact,
+--- because the text is pasted as-is without line-by-line Enter presses.
+---@param pane_id string target pane identifier
+---@param text string the full text block to send
+---@param press_enter boolean whether to press Enter after pasting
+function M.send_text(pane_id, text, press_enter)
+  -- Use set-buffer to load text, then paste-buffer to insert it into the pane
+  -- The -p flag pastes and deletes the buffer afterwards
+  M.exec({ "set-buffer", "--", text })
+  M.exec({ "paste-buffer", "-t", pane_id, "-d", "-p" })
+  if press_enter then
+    M.exec({ "send-keys", "-t", pane_id, "Enter" })
+  end
+end
+
 --- Send a special key (like C-c, C-l) to a target pane
 ---@param pane_id string target pane identifier
 ---@param key string the key to send (e.g., "C-c", "C-l")
