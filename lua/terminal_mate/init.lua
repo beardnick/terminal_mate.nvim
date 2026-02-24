@@ -81,16 +81,50 @@ local function load_zsh_history()
     content = raw
   end
 
+  -- In zsh history files, line-ending backslashes have two meanings:
+  --   \\  (0x5c 0x5c) at EOL = actual command has \ (shell continuation)
+  --   \   (0x5c)      at EOL = history file continuation (no \ in actual cmd)
+  -- Both mean "this line continues on the next line" for parsing purposes.
+
   -- Helper: check if a line ends with backslash (continuation)
   local function is_continuation(line)
-    -- Ends with \\ (double backslash) or single \ (but not \\\\)
     return line:match("\\$") ~= nil
+  end
+
+  -- Helper: unescape a completed command entry from history file format
+  -- to actual command format:
+  --   \\\n  → \\\n   (double backslash EOL → single backslash, keep newline)
+  --   \\n   → \n      (single backslash EOL → remove backslash, keep newline)
+  local function unescape_history(cmd)
+    local lines = {}
+    for line in cmd:gmatch("[^\n]+") do
+      table.insert(lines, line)
+    end
+    -- Also handle trailing empty parts
+    if cmd:match("\n$") then
+      table.insert(lines, "")
+    end
+
+    local result = {}
+    for _, line in ipairs(lines) do
+      if line:match("\\\\$") then
+        -- Line ends with \\\\ → actual command has \\ (shell continuation)
+        table.insert(result, line:sub(1, -2))  -- remove one backslash
+      elseif line:match("\\$") then
+        -- Line ends with single \\ → history continuation, no \\ in actual cmd
+        table.insert(result, line:sub(1, -2))  -- remove the backslash
+      else
+        table.insert(result, line)
+      end
+    end
+    return table.concat(result, "\n")
   end
 
   -- Helper: save a completed command entry
   local function save_entry(cmd)
     if cmd then
-      local trimmed = vim.trim(cmd)
+      local unescaped = unescape_history(cmd)
+      local trimmed = vim.trim(unescaped)
       if trimmed ~= "" and not trimmed:match("^#") then
         table.insert(history, trimmed)
       end
