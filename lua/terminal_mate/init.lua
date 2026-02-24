@@ -23,63 +23,65 @@ local function notify(msg, level)
   vim.notify("[TerminalMate] " .. msg, level or vim.log.levels.INFO)
 end
 
---- Load zsh history from ~/.zsh_history
---- Handles multi-line commands: lines ending with \ are continuation lines,
---- and zsh extended format ": timestamp:0;cmd" with embedded newlines.
+--- Load shell history using the shell's own built-in commands.
+--- For zsh: uses `fc -R; fc -l -n 1` which correctly handles metafied encoding
+--- (zsh stores non-ASCII bytes like UTF-8 in a special metafied format).
+--- For bash: falls back to reading ~/.bash_history directly.
+--- Multi-line commands (with \n literal in fc output) are restored to real newlines.
 ---@return string[]
 local function load_zsh_history()
   local history = {}
   local history_file = vim.env.HISTFILE or (vim.env.HOME .. "/.zsh_history")
 
-  -- Read entire file as binary to handle embedded newlines properly
-  local f = io.open(history_file, "rb")
-  if not f then
-    f = io.open(vim.env.HOME .. "/.bash_history", "rb")
-  end
-  if not f then
-    return history
-  end
-  local content = f:read("*a")
-  f:close()
-
-  -- Split into raw lines (use [^\n]+ to skip empty lines)
-  local raw_lines = {}
-  for line in content:gmatch("[^\n]+") do
-    table.insert(raw_lines, line)
+  -- Detect if the history file looks like zsh format
+  local is_zsh = false
+  local f = io.open(history_file, "r")
+  if f then
+    local first_line = f:read("*l") or ""
+    f:close()
+    -- Zsh extended history starts with ": timestamp:0;..."
+    if first_line:match("^: %d+:%d+;") then
+      is_zsh = true
+    end
   end
 
-  -- Parse: merge continuation lines (ending with \) and handle zsh extended format
-  local i = 1
-  while i <= #raw_lines do
-    local line = raw_lines[i]
-
-    -- Check if this is a zsh extended history entry: ": timestamp:0;command"
-    local cmd = line:match("^: %d+:%d+;(.*)$")
-    if cmd then
-      -- Merge continuation lines: if cmd ends with \, next line continues
-      while cmd:sub(-1) == "\\" and i < #raw_lines do
-        i = i + 1
-        cmd = cmd:sub(1, -2) .. "\n" .. raw_lines[i]
-      end
-      cmd = vim.trim(cmd)
-      if cmd ~= "" then
-        table.insert(history, cmd)
-      end
-    else
-      -- Plain format (bash or simple zsh)
-      local plain = line
-      -- Merge backslash continuations
-      while plain:sub(-1) == "\\" and i < #raw_lines do
-        i = i + 1
-        plain = plain:sub(1, -2) .. "\n" .. raw_lines[i]
-      end
-      plain = vim.trim(plain)
-      if plain ~= "" and not plain:match("^#") then
-        table.insert(history, plain)
+  if is_zsh then
+    -- Use zsh's own fc builtin to read history.
+    -- This correctly decodes the metafied format, handling UTF-8 characters
+    -- (Chinese, Japanese, emoji, etc.) that would otherwise be garbled.
+    local cmd = string.format(
+      "zsh -c 'HISTFILE=%s; HISTSIZE=100000; SAVEHIST=100000; "
+      .. "setopt EXTENDED_HISTORY; fc -R; fc -l -n 1'",
+      vim.fn.shellescape(history_file)
+    )
+    local output = vim.fn.system(cmd)
+    if vim.v.shell_error == 0 and output ~= "" then
+      for line in output:gmatch("[^\n]+") do
+        -- fc outputs multi-line commands with literal \n
+        -- Restore them to real newlines
+        local restored = line:gsub("\\n", "\n")
+        restored = vim.trim(restored)
+        if restored ~= "" then
+          table.insert(history, restored)
+        end
       end
     end
-
-    i = i + 1
+  else
+    -- Fallback: read bash history or plain text history directly
+    local hist_file = history_file
+    f = io.open(hist_file, "r")
+    if not f then
+      f = io.open(vim.env.HOME .. "/.bash_history", "r")
+    end
+    if f then
+      for line in f:lines() do
+        line = vim.trim(line)
+        if line ~= "" and not line:match("^#") then
+          table.insert(history, line)
+        end
+      end
+      f:close()
+    end
   end
 
   return history
