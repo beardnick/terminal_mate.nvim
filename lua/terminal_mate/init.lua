@@ -14,7 +14,49 @@ local state = {
   history = {},           -- command history (loaded from zsh + session)
   history_index = 0,      -- 0 = not browsing, 1 = most recent
   _saved_nvim_height = nil, -- saved nvim pane height before search resize
+  _saved_ui = nil,          -- saved UI options to restore on close
 }
+
+--- Save current UI options and apply minimal UI for TerminalMate mode
+local function apply_minimal_ui()
+  state._saved_ui = {
+    cmdheight = vim.o.cmdheight,
+    laststatus = vim.o.laststatus,
+    showtabline = vim.o.showtabline,
+    ruler = vim.o.ruler,
+    showmode = vim.o.showmode,
+    showcmd = vim.o.showcmd,
+    signcolumn = vim.wo.signcolumn,
+    number = vim.wo.number,
+    relativenumber = vim.wo.relativenumber,
+  }
+  vim.o.cmdheight = 0       -- hide command line
+  vim.o.laststatus = 0      -- hide status line
+  vim.o.showtabline = 0     -- hide tab line / toolbar
+  vim.o.ruler = false       -- hide ruler
+  vim.o.showmode = false    -- hide -- INSERT -- etc.
+  vim.o.showcmd = false     -- hide partial commands
+end
+
+--- Restore saved UI options
+local function restore_ui()
+  if not state._saved_ui then
+    return
+  end
+  vim.o.cmdheight = state._saved_ui.cmdheight
+  vim.o.laststatus = state._saved_ui.laststatus
+  vim.o.showtabline = state._saved_ui.showtabline
+  vim.o.ruler = state._saved_ui.ruler
+  vim.o.showmode = state._saved_ui.showmode
+  vim.o.showcmd = state._saved_ui.showcmd
+  -- Restore window-local options only if the window still exists
+  pcall(function()
+    vim.wo.signcolumn = state._saved_ui.signcolumn
+    vim.wo.number = state._saved_ui.number
+    vim.wo.relativenumber = state._saved_ui.relativenumber
+  end)
+  state._saved_ui = nil
+end
 
 --- Notify helper
 ---@param msg string
@@ -343,9 +385,17 @@ function M.open()
   state.terminal_pane_id = pane_id
   state.is_open = true
 
+  -- Apply minimal UI: hide toolbar, statusline, cmdline
+  apply_minimal_ui()
+
   local buf = get_or_create_input_buf()
   vim.api.nvim_set_current_buf(buf)
   M._setup_buffer_keymaps(buf)
+
+  -- Also hide line numbers and sign column in the input buffer window
+  vim.wo.signcolumn = "no"
+  vim.wo.number = false
+  vim.wo.relativenumber = false
 
   notify("Terminal pane opened (" .. pane_id .. ")")
 end
@@ -363,6 +413,9 @@ function M.close()
 
   state.terminal_pane_id = nil
   state.is_open = false
+
+  -- Restore UI options
+  restore_ui()
 
   notify("Terminal pane closed.")
 end
