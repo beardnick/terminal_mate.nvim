@@ -13,6 +13,7 @@ local state = {
   is_open = false,
   history = {},           -- command history (loaded from zsh + session)
   history_index = 0,      -- 0 = not browsing, 1 = most recent
+  _saved_nvim_height = nil, -- saved nvim pane height before search resize
 }
 
 --- Notify helper
@@ -23,38 +24,63 @@ local function notify(msg, level)
 end
 
 --- Load zsh history from ~/.zsh_history
+--- Handles multi-line commands: lines ending with \ are continuation lines,
+--- and zsh extended format ": timestamp:0;cmd" with embedded newlines.
 ---@return string[]
 local function load_zsh_history()
   local history = {}
   local history_file = vim.env.HISTFILE or (vim.env.HOME .. "/.zsh_history")
 
-  local f = io.open(history_file, "r")
+  -- Read entire file as binary to handle embedded newlines properly
+  local f = io.open(history_file, "rb")
   if not f then
-    -- Try bash history as fallback
-    f = io.open(vim.env.HOME .. "/.bash_history", "r")
+    f = io.open(vim.env.HOME .. "/.bash_history", "rb")
   end
   if not f then
     return history
   end
+  local content = f:read("*a")
+  f:close()
 
-  for line in f:lines() do
-    -- zsh extended history format: ": timestamp:0;command"
-    local cmd = line:match("^: %d+:%d+;(.+)$")
+  -- Split into raw lines (use [^\n]+ to skip empty lines)
+  local raw_lines = {}
+  for line in content:gmatch("[^\n]+") do
+    table.insert(raw_lines, line)
+  end
+
+  -- Parse: merge continuation lines (ending with \) and handle zsh extended format
+  local i = 1
+  while i <= #raw_lines do
+    local line = raw_lines[i]
+
+    -- Check if this is a zsh extended history entry: ": timestamp:0;command"
+    local cmd = line:match("^: %d+:%d+;(.*)$")
     if cmd then
-      -- zsh extended format
+      -- Merge continuation lines: if cmd ends with \, next line continues
+      while cmd:sub(-1) == "\\" and i < #raw_lines do
+        i = i + 1
+        cmd = cmd:sub(1, -2) .. "\n" .. raw_lines[i]
+      end
       cmd = vim.trim(cmd)
       if cmd ~= "" then
         table.insert(history, cmd)
       end
     else
-      -- plain format (bash or simple zsh)
-      line = vim.trim(line)
-      if line ~= "" and not line:match("^#") then
-        table.insert(history, line)
+      -- Plain format (bash or simple zsh)
+      local plain = line
+      -- Merge backslash continuations
+      while plain:sub(-1) == "\\" and i < #raw_lines do
+        i = i + 1
+        plain = plain:sub(1, -2) .. "\n" .. raw_lines[i]
+      end
+      plain = vim.trim(plain)
+      if plain ~= "" and not plain:match("^#") then
+        table.insert(history, plain)
       end
     end
+
+    i = i + 1
   end
-  f:close()
 
   return history
 end
@@ -65,7 +91,6 @@ end
 local function dedupe_history(hist)
   local seen = {}
   local result = {}
-  -- Walk backwards so we keep the most recent occurrence
   for i = #hist, 1, -1 do
     if not seen[hist[i]] then
       seen[hist[i]] = true
@@ -81,7 +106,6 @@ local function add_to_history(cmd)
   if cmd == "" then
     return
   end
-  -- Remove duplicates of this command
   for i = #state.history, 1, -1 do
     if state.history[i] == cmd then
       table.remove(state.history, i)
@@ -98,14 +122,12 @@ local function get_or_create_input_buf()
     return state.input_buf
   end
 
-  local buf = vim.api.nvim_create_buf(false, true) -- nofile, scratch
+  local buf = vim.api.nvim_create_buf(false, true)
   vim.api.nvim_buf_set_name(buf, config.options.buffer.bufname)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].filetype = config.options.buffer.filetype
   vim.bo[buf].swapfile = false
   vim.bo[buf].bufhidden = "hide"
-
-  -- Enable syntax highlighting for shell commands
   vim.api.nvim_buf_set_option(buf, "syntax", "sh")
 
   state.input_buf = buf
@@ -116,7 +138,6 @@ end
 ---@return string
 local function get_buffer_text()
   local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  -- Filter out empty lines and collect
   local non_empty = {}
   for _, line in ipairs(lines) do
     if vim.trim(line) ~= "" then
@@ -145,7 +166,6 @@ local function send_to_terminal(text)
     return
   end
 
-  -- Check if pane still exists
   if not tmux.pane_exists(state.terminal_pane_id) then
     notify("Terminal pane no longer exists. Reopening...", vim.log.levels.WARN)
     state.is_open = false
@@ -156,7 +176,6 @@ local function send_to_terminal(text)
     end
   end
 
-  -- Send each line separately
   local lines = vim.split(text, "\n", { plain = true, trimempty = false })
   for _, line in ipairs(lines) do
     tmux.send_keys(state.terminal_pane_id, line, true)
@@ -169,6 +188,26 @@ local function clear_buffer()
     vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
   end
+end
+
+--- Temporarily resize nvim pane to 50% for search, save original height
+local function expand_nvim_pane_for_search()
+  if not state.nvim_pane_id then
+    return
+  end
+  -- Save current height
+  state._saved_nvim_height = tmux.get_pane_height(state.nvim_pane_id)
+  -- Resize nvim pane to 50%
+  tmux.resize_pane_percent(state.nvim_pane_id, 50)
+end
+
+--- Restore nvim pane to original height after search
+local function restore_nvim_pane_size()
+  if not state.nvim_pane_id or not state._saved_nvim_height then
+    return
+  end
+  tmux.resize_pane_rows(state.nvim_pane_id, state._saved_nvim_height)
+  state._saved_nvim_height = nil
 end
 
 --- Open the terminal pane
@@ -185,15 +224,12 @@ function M.open()
     end
   end
 
-  -- Load zsh history on first open
   if #state.history == 0 then
     state.history = dedupe_history(load_zsh_history())
   end
 
-  -- Record nvim's pane id
   state.nvim_pane_id = tmux.current_pane_id()
 
-  -- Split above: create terminal pane on top
   local pane_id = tmux.split_above(config.options.split_percent, config.options.shell)
   if not pane_id then
     notify("Failed to create tmux split.", vim.log.levels.ERROR)
@@ -203,11 +239,8 @@ function M.open()
   state.terminal_pane_id = pane_id
   state.is_open = true
 
-  -- Set up the input buffer in the current nvim window
   local buf = get_or_create_input_buf()
   vim.api.nvim_set_current_buf(buf)
-
-  -- Set up buffer-local keymaps
   M._setup_buffer_keymaps(buf)
 
   notify("Terminal pane opened (" .. pane_id .. ")")
@@ -247,10 +280,7 @@ function M.send_buffer()
   if text == "" then
     return
   end
-
-  -- Add to history before sending
   add_to_history(text)
-
   send_to_terminal(text)
   clear_buffer()
 end
@@ -261,7 +291,6 @@ function M.send_visual()
   if text == "" then
     return
   end
-
   add_to_history(text)
   send_to_terminal(text)
 
@@ -311,7 +340,6 @@ function M.history_prev()
   end
 
   if state.history_index == 0 then
-    -- Save current buffer content before browsing history
     state._saved_input = get_buffer_text()
   end
 
@@ -320,7 +348,6 @@ function M.history_prev()
   if cmd then
     local lines = vim.split(cmd, "\n", { plain = true })
     vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
-    -- Move cursor to end
     vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
   end
 end
@@ -334,7 +361,6 @@ function M.history_next()
   state.history_index = state.history_index - 1
 
   if state.history_index == 0 then
-    -- Restore saved input
     local saved = state._saved_input or ""
     local lines = vim.split(saved, "\n", { plain = true })
     if #lines == 0 then
@@ -375,15 +401,18 @@ local function fuzzy_match(str, query)
   return true
 end
 
---- Built-in floating window history search (no external plugin needed)
+--- Built-in floating window history search
+--- Expands nvim pane to 50% while searching, restores on close
 function M.history_search()
   if #state.history == 0 then
     notify("No history available.", vim.log.levels.INFO)
     return
   end
 
-  -- Remember the caller buffer to write the result back
   local caller_buf = state.input_buf
+
+  -- Expand nvim pane to 50% so the float has room
+  expand_nvim_pane_for_search()
 
   -- Build items in reverse order (most recent first)
   local all_items = {}
@@ -391,185 +420,177 @@ function M.history_search()
     table.insert(all_items, state.history[i])
   end
 
-  -- Calculate float dimensions
-  local ui = vim.api.nvim_list_uis()[1] or { width = 80, height = 24 }
-  local float_width = math.min(math.floor(ui.width * 0.8), 120)
-  local float_height = math.min(math.floor(ui.height * 0.6), 30)
-  local row = math.floor((ui.height - float_height) / 2)
-  local col = math.floor((ui.width - float_width) / 2)
+  -- Calculate float dimensions based on editor size (after resize)
+  -- Use a small delay to let tmux resize propagate
+  vim.defer_fn(function()
+    local ui = vim.api.nvim_list_uis()[1] or { width = 80, height = 24 }
+    local float_width = math.min(math.floor(ui.width * 0.9), 140)
+    local float_height = math.max(math.floor(ui.height * 0.7), 10)
+    local row = math.max(math.floor((ui.height - float_height) / 2) - 1, 0)
+    local col = math.floor((ui.width - float_width) / 2)
 
-  -- Create results buffer
-  local results_buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[results_buf].bufhidden = "wipe"
+    -- Create results buffer
+    local results_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[results_buf].bufhidden = "wipe"
 
-  -- Create input buffer (single line)
-  local input_buf = vim.api.nvim_create_buf(false, true)
-  vim.bo[input_buf].bufhidden = "wipe"
-  vim.bo[input_buf].buftype = "nofile"
+    -- Create input buffer (single line)
+    local input_buf = vim.api.nvim_create_buf(false, true)
+    vim.bo[input_buf].bufhidden = "wipe"
+    vim.bo[input_buf].buftype = "nofile"
 
-  -- Open results window
-  local results_win = vim.api.nvim_open_win(results_buf, false, {
-    relative = "editor",
-    width = float_width,
-    height = float_height - 3,
-    row = row,
-    col = col,
-    style = "minimal",
-    border = "rounded",
-    title = " History ",
-    title_pos = "center",
-  })
-  vim.api.nvim_win_set_option(results_win, "cursorline", true)
-  vim.api.nvim_win_set_option(results_win, "winhighlight", "CursorLine:PmenuSel,Normal:Normal")
+    -- Open results window
+    local results_win = vim.api.nvim_open_win(results_buf, false, {
+      relative = "editor",
+      width = float_width,
+      height = float_height - 3,
+      row = row,
+      col = col,
+      style = "minimal",
+      border = "rounded",
+      title = " History ",
+      title_pos = "center",
+    })
+    vim.api.nvim_win_set_option(results_win, "cursorline", true)
+    vim.api.nvim_win_set_option(results_win, "winhighlight", "CursorLine:PmenuSel,Normal:Normal")
 
-  -- Open input window below results
-  local input_win = vim.api.nvim_open_win(input_buf, true, {
-    relative = "editor",
-    width = float_width,
-    height = 1,
-    row = row + float_height - 2,
-    col = col,
-    style = "minimal",
-    border = "rounded",
-    title = " Search> ",
-    title_pos = "left",
-  })
+    -- Open input window below results
+    local input_win = vim.api.nvim_open_win(input_buf, true, {
+      relative = "editor",
+      width = float_width,
+      height = 1,
+      row = row + float_height - 2,
+      col = col,
+      style = "minimal",
+      border = "rounded",
+      title = " Search> ",
+      title_pos = "left",
+    })
 
-  -- State for the picker
-  local picker = {
-    query = "",
-    filtered = vim.deepcopy(all_items),
-    selected = 1,  -- 1-indexed, 1 = top item
-  }
+    local picker = {
+      query = "",
+      filtered = vim.deepcopy(all_items),
+      selected = 1,
+    }
 
-  -- Render the results list
-  local function render()
-    local display_lines = {}
-    for _, item in ipairs(picker.filtered) do
-      local line = item:gsub("\n", " \\ ")
-      table.insert(display_lines, line)
-    end
-    vim.api.nvim_buf_set_option(results_buf, "modifiable", true)
-    vim.api.nvim_buf_set_lines(results_buf, 0, -1, false, display_lines)
-    vim.api.nvim_buf_set_option(results_buf, "modifiable", false)
+    local function render()
+      local display_lines = {}
+      for _, item in ipairs(picker.filtered) do
+        local line = item:gsub("\n", " \\ ")
+        table.insert(display_lines, line)
+      end
+      vim.api.nvim_buf_set_option(results_buf, "modifiable", true)
+      vim.api.nvim_buf_set_lines(results_buf, 0, -1, false, display_lines)
+      vim.api.nvim_buf_set_option(results_buf, "modifiable", false)
 
-    -- Clamp selection
-    if picker.selected < 1 then picker.selected = 1 end
-    if picker.selected > #picker.filtered then picker.selected = #picker.filtered end
+      if picker.selected < 1 then picker.selected = 1 end
+      if picker.selected > #picker.filtered then picker.selected = #picker.filtered end
 
-    -- Move cursor in results window
-    if #picker.filtered > 0 and vim.api.nvim_win_is_valid(results_win) then
-      vim.api.nvim_win_set_cursor(results_win, { picker.selected, 0 })
-    end
-  end
-
-  -- Filter items based on query
-  local function update_filter()
-    picker.filtered = {}
-    for _, item in ipairs(all_items) do
-      local flat = item:gsub("\n", " ")
-      if fuzzy_match(flat, picker.query) then
-        table.insert(picker.filtered, item)
+      if #picker.filtered > 0 and vim.api.nvim_win_is_valid(results_win) then
+        vim.api.nvim_win_set_cursor(results_win, { picker.selected, 0 })
       end
     end
-    picker.selected = 1
-    render()
-  end
 
-  -- Close the picker
-  local function close_picker()
-    if vim.api.nvim_win_is_valid(input_win) then
-      vim.api.nvim_win_close(input_win, true)
-    end
-    if vim.api.nvim_win_is_valid(results_win) then
-      vim.api.nvim_win_close(results_win, true)
-    end
-  end
-
-  -- Confirm selection: write chosen command into the caller buffer
-  local function confirm()
-    local choice = picker.filtered[picker.selected]
-    close_picker()
-    if choice and caller_buf and vim.api.nvim_buf_is_valid(caller_buf) then
-      local lines = vim.split(choice, "\n", { plain = true })
-      vim.api.nvim_buf_set_lines(caller_buf, 0, -1, false, lines)
-      -- Switch to caller buffer window and place cursor at end
-      for _, win in ipairs(vim.api.nvim_list_wins()) do
-        if vim.api.nvim_win_get_buf(win) == caller_buf then
-          vim.api.nvim_set_current_win(win)
-          vim.api.nvim_win_set_cursor(win, { #lines, #lines[#lines] })
-          break
+    local function update_filter()
+      picker.filtered = {}
+      for _, item in ipairs(all_items) do
+        local flat = item:gsub("\n", " ")
+        if fuzzy_match(flat, picker.query) then
+          table.insert(picker.filtered, item)
         end
       end
-      state.history_index = 0
+      picker.selected = 1
+      render()
     end
-  end
 
-  -- Initial render
-  update_filter()
-
-  -- Start insert mode in the input window
-  vim.cmd("startinsert")
-
-  -- Set up keymaps on the input buffer
-  local kopts = { buffer = input_buf, noremap = true, silent = true }
-
-  -- Esc / Ctrl-C: close picker
-  vim.keymap.set({ "i", "n" }, "<Esc>", function()
-    close_picker()
-  end, kopts)
-  vim.keymap.set("i", "<C-c>", function()
-    close_picker()
-  end, kopts)
-
-  -- Enter: confirm selection
-  vim.keymap.set({ "i", "n" }, "<CR>", function()
-    confirm()
-  end, kopts)
-
-  -- Up / Ctrl-P: move selection up
-  vim.keymap.set("i", "<Up>", function()
-    picker.selected = math.max(1, picker.selected - 1)
-    render()
-  end, kopts)
-  vim.keymap.set("i", "<C-p>", function()
-    picker.selected = math.max(1, picker.selected - 1)
-    render()
-  end, kopts)
-
-  -- Down / Ctrl-N: move selection down
-  vim.keymap.set("i", "<Down>", function()
-    picker.selected = math.min(#picker.filtered, picker.selected + 1)
-    render()
-  end, kopts)
-  vim.keymap.set("i", "<C-n>", function()
-    picker.selected = math.min(#picker.filtered, picker.selected + 1)
-    render()
-  end, kopts)
-
-  -- Watch for text changes in input buffer to update filter
-  vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
-    buffer = input_buf,
-    callback = function()
-      if not vim.api.nvim_buf_is_valid(input_buf) then
-        return
+    local closed = false
+    local function close_picker()
+      if closed then return end
+      closed = true
+      if vim.api.nvim_win_is_valid(input_win) then
+        vim.api.nvim_win_close(input_win, true)
       end
-      local lines = vim.api.nvim_buf_get_lines(input_buf, 0, 1, false)
-      picker.query = lines[1] or ""
-      update_filter()
-    end,
-  })
+      if vim.api.nvim_win_is_valid(results_win) then
+        vim.api.nvim_win_close(results_win, true)
+      end
+      -- Restore nvim pane size
+      restore_nvim_pane_size()
+    end
 
-  -- Auto-close when input buffer is hidden
-  vim.api.nvim_create_autocmd("BufLeave", {
-    buffer = input_buf,
-    once = true,
-    callback = function()
-      vim.schedule(function()
-        close_picker()
-      end)
-    end,
-  })
+    local function confirm()
+      local choice = picker.filtered[picker.selected]
+      close_picker()
+      if choice and caller_buf and vim.api.nvim_buf_is_valid(caller_buf) then
+        local lines = vim.split(choice, "\n", { plain = true })
+        vim.api.nvim_buf_set_lines(caller_buf, 0, -1, false, lines)
+        for _, win in ipairs(vim.api.nvim_list_wins()) do
+          if vim.api.nvim_win_get_buf(win) == caller_buf then
+            vim.api.nvim_set_current_win(win)
+            vim.api.nvim_win_set_cursor(win, { #lines, #lines[#lines] })
+            break
+          end
+        end
+        state.history_index = 0
+      end
+    end
+
+    -- Initial render
+    update_filter()
+    vim.cmd("startinsert")
+
+    -- Keymaps
+    local kopts = { buffer = input_buf, noremap = true, silent = true }
+
+    vim.keymap.set({ "i", "n" }, "<Esc>", function()
+      close_picker()
+    end, kopts)
+    vim.keymap.set("i", "<C-c>", function()
+      close_picker()
+    end, kopts)
+
+    vim.keymap.set({ "i", "n" }, "<CR>", function()
+      confirm()
+    end, kopts)
+
+    vim.keymap.set("i", "<Up>", function()
+      picker.selected = math.max(1, picker.selected - 1)
+      render()
+    end, kopts)
+    vim.keymap.set("i", "<C-p>", function()
+      picker.selected = math.max(1, picker.selected - 1)
+      render()
+    end, kopts)
+
+    vim.keymap.set("i", "<Down>", function()
+      picker.selected = math.min(#picker.filtered, picker.selected + 1)
+      render()
+    end, kopts)
+    vim.keymap.set("i", "<C-n>", function()
+      picker.selected = math.min(#picker.filtered, picker.selected + 1)
+      render()
+    end, kopts)
+
+    vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
+      buffer = input_buf,
+      callback = function()
+        if not vim.api.nvim_buf_is_valid(input_buf) then
+          return
+        end
+        local lines = vim.api.nvim_buf_get_lines(input_buf, 0, 1, false)
+        picker.query = lines[1] or ""
+        update_filter()
+      end,
+    })
+
+    vim.api.nvim_create_autocmd("BufLeave", {
+      buffer = input_buf,
+      once = true,
+      callback = function()
+        vim.schedule(function()
+          close_picker()
+        end)
+      end,
+    })
+  end, 50) -- small delay for tmux resize to take effect
 end
 
 --- Get current state (for statusline integration etc.)
@@ -589,12 +610,10 @@ function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
 
-  -- Normal mode: send all buffer content (default: <C-s>)
   vim.keymap.set("n", keymap.send_line, function()
     M.send_buffer()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands" }))
 
-  -- Visual mode: send selection (default: <C-s>)
   vim.keymap.set("v", keymap.send_visual, function()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
     vim.schedule(function()
@@ -602,15 +621,12 @@ function M._setup_buffer_keymaps(buf)
     end)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send visual selection" }))
 
-  -- Insert mode: send all buffer content, stay in insert mode (default: <C-s>)
   vim.keymap.set("i", keymap.send_line, function()
-    local cursor = vim.fn.mode() -- remember we're in insert
     vim.cmd("stopinsert")
     M.send_buffer()
     vim.cmd("startinsert")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
 
-  -- History navigation: Up/Down arrows
   vim.keymap.set("n", keymap.history_prev, function()
     M.history_prev()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous history" }))
@@ -631,7 +647,6 @@ function M._setup_buffer_keymaps(buf)
     vim.cmd("startinsert!")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Next history (insert)" }))
 
-  -- History search
   vim.keymap.set("n", keymap.history_search, function()
     M.history_search()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search history" }))
@@ -641,12 +656,10 @@ function M._setup_buffer_keymaps(buf)
     M.history_search()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search history (insert)" }))
 
-  -- Clear terminal
   vim.keymap.set("n", keymap.clear, function()
     M.clear()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Clear terminal" }))
 
-  -- Interrupt terminal
   vim.keymap.set("n", keymap.interrupt, function()
     M.interrupt()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Interrupt (Ctrl-C)" }))
@@ -656,7 +669,6 @@ end
 local function setup_autocmds()
   local group = vim.api.nvim_create_augroup("TerminalMate", { clear = true })
 
-  -- Clean up terminal pane when nvim exits
   if config.options.close_on_exit then
     vim.api.nvim_create_autocmd("VimLeavePre", {
       group = group,
@@ -676,7 +688,6 @@ end
 function M.setup(opts)
   config.setup(opts)
 
-  -- Validate tmux availability
   if not tmux.is_tmux() then
     notify(
       "Not running inside tmux. terminal_mate will be available but cannot open terminal panes.",
@@ -686,7 +697,6 @@ function M.setup(opts)
 
   setup_autocmds()
 
-  -- Set up global keymaps for open/close/toggle
   local keymap = config.options.keymap
   local gopts = { noremap = true, silent = true }
 

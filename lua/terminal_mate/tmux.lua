@@ -98,6 +98,45 @@ function M.kill_pane(pane_id)
   M.exec({ "kill-pane", "-t", pane_id })
 end
 
+--- Resize a pane to a given percentage of the window height
+---@param pane_id string target pane identifier
+---@param percent number percentage of total window height
+function M.resize_pane_percent(pane_id, percent)
+  M.exec({ "resize-pane", "-t", pane_id, "-y", tostring(percent) .. "%" })
+end
+
+--- Get the current height of a pane in rows
+---@param pane_id string
+---@return number|nil height
+function M.get_pane_height(pane_id)
+  local output, code = M.exec({
+    "display-message", "-t", pane_id, "-p", "#{pane_height}"
+  })
+  if code ~= 0 then
+    return nil
+  end
+  return tonumber(output)
+end
+
+--- Get the total window height in rows
+---@return number|nil height
+function M.get_window_height()
+  local output, code = M.exec({
+    "display-message", "-p", "#{window_height}"
+  })
+  if code ~= 0 then
+    return nil
+  end
+  return tonumber(output)
+end
+
+--- Resize a pane to a specific number of rows
+---@param pane_id string
+---@param rows number
+function M.resize_pane_rows(pane_id, rows)
+  M.exec({ "resize-pane", "-t", pane_id, "-y", tostring(rows) })
+end
+
 --- Scroll the pane to the bottom (exit copy mode if active)
 ---@param pane_id string
 function M.scroll_to_bottom(pane_id)
