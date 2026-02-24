@@ -353,37 +353,223 @@ function M.history_next()
   end
 end
 
---- Search history with vim.ui.select (fuzzy picker)
+--- Simple fuzzy match: all characters in query must appear in str in order
+---@param str string
+---@param query string
+---@return boolean
+local function fuzzy_match(str, query)
+  if query == "" then
+    return true
+  end
+  local lower_str = str:lower()
+  local lower_q = query:lower()
+  local si = 1
+  for qi = 1, #lower_q do
+    local ch = lower_q:sub(qi, qi)
+    local found = lower_str:find(ch, si, true)
+    if not found then
+      return false
+    end
+    si = found + 1
+  end
+  return true
+end
+
+--- Built-in floating window history search (no external plugin needed)
 function M.history_search()
   if #state.history == 0 then
     notify("No history available.", vim.log.levels.INFO)
     return
   end
 
-  -- Show history in reverse order (most recent first)
-  local items = {}
+  -- Remember the caller buffer to write the result back
+  local caller_buf = state.input_buf
+
+  -- Build items in reverse order (most recent first)
+  local all_items = {}
   for i = #state.history, 1, -1 do
-    table.insert(items, state.history[i])
+    table.insert(all_items, state.history[i])
   end
 
-  vim.ui.select(items, {
-    prompt = "Command History> ",
-    format_item = function(item)
-      -- Truncate long commands for display, replace newlines
-      local display = item:gsub("\n", " \\ ")
-      if #display > 80 then
-        display = display:sub(1, 77) .. "..."
+  -- Calculate float dimensions
+  local ui = vim.api.nvim_list_uis()[1] or { width = 80, height = 24 }
+  local float_width = math.min(math.floor(ui.width * 0.8), 120)
+  local float_height = math.min(math.floor(ui.height * 0.6), 30)
+  local row = math.floor((ui.height - float_height) / 2)
+  local col = math.floor((ui.width - float_width) / 2)
+
+  -- Create results buffer
+  local results_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[results_buf].bufhidden = "wipe"
+
+  -- Create input buffer (single line)
+  local input_buf = vim.api.nvim_create_buf(false, true)
+  vim.bo[input_buf].bufhidden = "wipe"
+  vim.bo[input_buf].buftype = "nofile"
+
+  -- Open results window
+  local results_win = vim.api.nvim_open_win(results_buf, false, {
+    relative = "editor",
+    width = float_width,
+    height = float_height - 3,
+    row = row,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " History ",
+    title_pos = "center",
+  })
+  vim.api.nvim_win_set_option(results_win, "cursorline", true)
+  vim.api.nvim_win_set_option(results_win, "winhighlight", "CursorLine:PmenuSel,Normal:Normal")
+
+  -- Open input window below results
+  local input_win = vim.api.nvim_open_win(input_buf, true, {
+    relative = "editor",
+    width = float_width,
+    height = 1,
+    row = row + float_height - 2,
+    col = col,
+    style = "minimal",
+    border = "rounded",
+    title = " Search> ",
+    title_pos = "left",
+  })
+
+  -- State for the picker
+  local picker = {
+    query = "",
+    filtered = vim.deepcopy(all_items),
+    selected = 1,  -- 1-indexed, 1 = top item
+  }
+
+  -- Render the results list
+  local function render()
+    local display_lines = {}
+    for _, item in ipairs(picker.filtered) do
+      local line = item:gsub("\n", " \\ ")
+      table.insert(display_lines, line)
+    end
+    vim.api.nvim_buf_set_option(results_buf, "modifiable", true)
+    vim.api.nvim_buf_set_lines(results_buf, 0, -1, false, display_lines)
+    vim.api.nvim_buf_set_option(results_buf, "modifiable", false)
+
+    -- Clamp selection
+    if picker.selected < 1 then picker.selected = 1 end
+    if picker.selected > #picker.filtered then picker.selected = #picker.filtered end
+
+    -- Move cursor in results window
+    if #picker.filtered > 0 and vim.api.nvim_win_is_valid(results_win) then
+      vim.api.nvim_win_set_cursor(results_win, { picker.selected, 0 })
+    end
+  end
+
+  -- Filter items based on query
+  local function update_filter()
+    picker.filtered = {}
+    for _, item in ipairs(all_items) do
+      local flat = item:gsub("\n", " ")
+      if fuzzy_match(flat, picker.query) then
+        table.insert(picker.filtered, item)
       end
-      return display
-    end,
-  }, function(choice)
-    if choice then
+    end
+    picker.selected = 1
+    render()
+  end
+
+  -- Close the picker
+  local function close_picker()
+    if vim.api.nvim_win_is_valid(input_win) then
+      vim.api.nvim_win_close(input_win, true)
+    end
+    if vim.api.nvim_win_is_valid(results_win) then
+      vim.api.nvim_win_close(results_win, true)
+    end
+  end
+
+  -- Confirm selection: write chosen command into the caller buffer
+  local function confirm()
+    local choice = picker.filtered[picker.selected]
+    close_picker()
+    if choice and caller_buf and vim.api.nvim_buf_is_valid(caller_buf) then
       local lines = vim.split(choice, "\n", { plain = true })
-      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
-      vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+      vim.api.nvim_buf_set_lines(caller_buf, 0, -1, false, lines)
+      -- Switch to caller buffer window and place cursor at end
+      for _, win in ipairs(vim.api.nvim_list_wins()) do
+        if vim.api.nvim_win_get_buf(win) == caller_buf then
+          vim.api.nvim_set_current_win(win)
+          vim.api.nvim_win_set_cursor(win, { #lines, #lines[#lines] })
+          break
+        end
+      end
       state.history_index = 0
     end
-  end)
+  end
+
+  -- Initial render
+  update_filter()
+
+  -- Start insert mode in the input window
+  vim.cmd("startinsert")
+
+  -- Set up keymaps on the input buffer
+  local kopts = { buffer = input_buf, noremap = true, silent = true }
+
+  -- Esc / Ctrl-C: close picker
+  vim.keymap.set({ "i", "n" }, "<Esc>", function()
+    close_picker()
+  end, kopts)
+  vim.keymap.set("i", "<C-c>", function()
+    close_picker()
+  end, kopts)
+
+  -- Enter: confirm selection
+  vim.keymap.set({ "i", "n" }, "<CR>", function()
+    confirm()
+  end, kopts)
+
+  -- Up / Ctrl-P: move selection up
+  vim.keymap.set("i", "<Up>", function()
+    picker.selected = math.max(1, picker.selected - 1)
+    render()
+  end, kopts)
+  vim.keymap.set("i", "<C-p>", function()
+    picker.selected = math.max(1, picker.selected - 1)
+    render()
+  end, kopts)
+
+  -- Down / Ctrl-N: move selection down
+  vim.keymap.set("i", "<Down>", function()
+    picker.selected = math.min(#picker.filtered, picker.selected + 1)
+    render()
+  end, kopts)
+  vim.keymap.set("i", "<C-n>", function()
+    picker.selected = math.min(#picker.filtered, picker.selected + 1)
+    render()
+  end, kopts)
+
+  -- Watch for text changes in input buffer to update filter
+  vim.api.nvim_create_autocmd({ "TextChangedI", "TextChanged" }, {
+    buffer = input_buf,
+    callback = function()
+      if not vim.api.nvim_buf_is_valid(input_buf) then
+        return
+      end
+      local lines = vim.api.nvim_buf_get_lines(input_buf, 0, 1, false)
+      picker.query = lines[1] or ""
+      update_filter()
+    end,
+  })
+
+  -- Auto-close when input buffer is hidden
+  vim.api.nvim_create_autocmd("BufLeave", {
+    buffer = input_buf,
+    once = true,
+    callback = function()
+      vim.schedule(function()
+        close_picker()
+      end)
+    end,
+  })
 end
 
 --- Get current state (for statusline integration etc.)
