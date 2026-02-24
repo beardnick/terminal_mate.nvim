@@ -34,3 +34,15 @@ end, { desc = "Clear terminal_mate pane" })
 vim.api.nvim_create_user_command("TerminalMateInterrupt", function()
   require("terminal_mate").interrupt()
 end, { desc = "Send Ctrl-C to terminal_mate pane" })
+
+vim.api.nvim_create_user_command("TerminalMateHistorySearch", function()
+  require("terminal_mate").history_search()
+end, { desc = "Search command history" })
+
+vim.api.nvim_create_user_command("TerminalMateHistoryPrev", function()
+  require("terminal_mate").history_prev()
+end, { desc = "Previous history entry" })
+
+vim.api.nvim_create_user_command("TerminalMateHistoryNext", function()
+  require("terminal_mate").history_next()
+end, { desc = "Next history entry" })

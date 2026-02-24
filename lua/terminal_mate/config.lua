@@ -3,18 +3,21 @@
 ---@field shell string|nil Shell to use in the terminal pane (nil = default shell)
 ---@field close_on_exit boolean Close terminal pane when nvim exits
 ---@field auto_scroll boolean Auto scroll terminal pane to bottom after sending
----@field clear_input boolean Clear the input line after sending
+---@field clear_input boolean Clear the input buffer after sending
 ---@field keymap TerminalMateKeymap
 ---@field buffer TerminalMateBuffer
 
 ---@class TerminalMateKeymap
----@field send_line string Send current line in normal mode
+---@field send_line string Send all buffer content in normal/insert mode
 ---@field send_visual string Send visual selection
 ---@field open string Open terminal pane
 ---@field close string Close terminal pane
 ---@field toggle string Toggle terminal pane
 ---@field clear string Send clear to terminal
 ---@field interrupt string Send Ctrl-C to terminal
+---@field history_prev string Navigate to previous (older) history entry
+---@field history_next string Navigate to next (newer) history entry
+---@field history_search string Open history search picker
 
 ---@class TerminalMateBuffer
 ---@field filetype string Filetype for the input buffer
@@ -36,6 +39,9 @@ M.defaults = {
     toggle = "<leader>tt",
     clear = "<C-l>",
     interrupt = "<C-c>",
+    history_prev = "<Up>",
+    history_next = "<Down>",
+    history_search = "<C-r>",
   },
   buffer = {
     filetype = "terminal_mate",

@@ -4,70 +4,78 @@
 
 A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal experience by integrating with [tmux](https://github.com/tmux/tmux). It creates a split-pane layout where you can type commands in a dedicated Neovim buffer and send them to an adjacent tmux pane for execution.
 
-![demo](https://user-images.githubusercontent.com/assets/your-id/placeholder.png) <!-- Placeholder for a future demo gif -->
-
-## ✨ Features
+## Features
 
 - **Warp-like Layout**: A large terminal pane at the top for output, and a slim Neovim buffer at the bottom for command input.
+- **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then the buffer is cleared automatically.
+- **Stay in Current Mode**: After sending, you remain in whatever mode you were in (insert or normal).
+- **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
+- **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them all at once.
 - **Seamless tmux Integration**: Automatically manages tmux panes for you.
-- **Dedicated Input Buffer**: Write and edit your shell commands with the full power of Neovim.
-- **Simple and Focused**: Does one thing well – sending commands from Neovim to tmux.
 - **Configurable**: Customize keymaps, pane size, and more.
 
-## 📋 Requirements
+## Requirements
 
 - [Neovim](https://neovim.io/) >= 0.8
 - [tmux](https://github.com/tmux/tmux)
 - You must be running Neovim from within a tmux session.
 
-## 📦 Installation
-
-Install the plugin with your favorite plugin manager.
+## Installation
 
 ### [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ```lua
 {
-  "your-github-username/terminal_mate.nvim",
+  "beardnick/terminal_mate.nvim",
   config = function()
-    require("terminal_mate").setup({
-      -- your custom config here
-    })
+    require("terminal_mate").setup()
   end,
 }
 ```
 
-## 🚀 Usage
+## Usage
 
 1.  Run Neovim inside a tmux session.
-2.  Run the `:TerminalMateOpen` command or use the configured keymap (`<leader>to` by default).
-3.  This will create a new tmux pane above your Neovim session.
-4.  The current Neovim window will switch to a dedicated input buffer.
-5.  Type your command in the buffer.
-6.  Press `Ctrl+S` in normal or insert mode to send the command to the terminal pane.
+2.  Run `:TerminalMateOpen` or press `<leader>to`.
+3.  A new tmux pane appears above; Neovim switches to a dedicated input buffer below.
+4.  Type your command(s) in the buffer (multi-line is supported).
+5.  Press `Ctrl+S` to send **all buffer content** to the terminal pane.
+6.  The buffer is cleared and you stay in your current mode, ready for the next command.
+
+### History Navigation
+
+- Press `Up` / `Down` to browse through previous commands (zsh history + session history).
+- Press `Ctrl+R` to open a fuzzy search picker over your entire command history.
 
 ### Commands
 
-- `:TerminalMateOpen`: Opens the terminal pane.
-- `:TerminalMateClose`: Closes the terminal pane.
-- `:TerminalMateToggle`: Toggles the terminal pane on and off.
-- `:TerminalMateSend [command]`: Sends the current line or the provided `[command]` to the terminal.
-- `:TerminalMateClear`: Clears the terminal screen (sends `clear`).
-- `:TerminalMateInterrupt`: Sends a `Ctrl-C` interrupt signal to the terminal.
+| Command | Description |
+|---------|-------------|
+| `:TerminalMateOpen` | Open the terminal pane |
+| `:TerminalMateClose` | Close the terminal pane |
+| `:TerminalMateToggle` | Toggle the terminal pane |
+| `:TerminalMateSend [cmd]` | Send current buffer or `[cmd]` to the terminal |
+| `:TerminalMateClear` | Clear the terminal screen |
+| `:TerminalMateInterrupt` | Send Ctrl-C to the terminal |
+| `:TerminalMateHistorySearch` | Open history search picker |
+| `:TerminalMateHistoryPrev` | Navigate to older history entry |
+| `:TerminalMateHistoryNext` | Navigate to newer history entry |
 
 ### Default Keymaps
 
-These keymaps are active only in the special `terminal_mate` input buffer.
+Keymaps active in the `terminal_mate` input buffer:
 
-| Keymap      | Mode          | Description                      |
-|-------------|---------------|----------------------------------|
-| `<C-s>`     | Normal        | Send the current line            |
-| `<C-s>`     | Insert        | Send the current line            |
-| `<C-s>`     | Visual        | Send the visual selection        |
-| `<C-l>`     | Normal        | Clear the terminal screen        |
-| `<C-c>`     | Normal        | Send an interrupt signal (Ctrl-C) |
+| Keymap   | Mode            | Description                             |
+|----------|-----------------|-----------------------------------------|
+| `<C-s>`  | Normal / Insert | Send all buffer content to terminal     |
+| `<C-s>`  | Visual          | Send visual selection to terminal       |
+| `<Up>`   | Normal / Insert | Previous command from history           |
+| `<Down>` | Normal / Insert | Next command from history               |
+| `<C-r>`  | Normal / Insert | Search command history (fuzzy picker)   |
+| `<C-l>`  | Normal          | Clear the terminal screen               |
+| `<C-c>`  | Normal          | Send interrupt signal (Ctrl-C)          |
 
-Global keymaps for managing the pane:
+Global keymaps:
 
 | Keymap        | Mode   | Description              |
 |---------------|--------|--------------------------|
@@ -75,34 +83,36 @@ Global keymaps for managing the pane:
 | `<leader>tc`  | Normal | Close the terminal pane  |
 | `<leader>tt`  | Normal | Toggle the terminal pane |
 
-## ⚙️ Configuration
-
-Call the `setup` function to customize the plugin. Here are the default settings:
+## Configuration
 
 ```lua
 require("terminal_mate").setup({
-  -- The percentage of the screen the top terminal pane should occupy.
+  -- Percentage of screen the top terminal pane occupies
   split_percent = 80,
-  -- The shell to run in the new pane (e.g., "zsh"). `nil` uses your default shell.
+  -- Shell to run in the new pane (nil = default shell)
   shell = nil,
-  -- If true, the terminal pane will be closed automatically when you exit Neovim.
+  -- Close terminal pane when exiting Neovim
   close_on_exit = true,
-  -- If true, the input line in the Neovim buffer will be cleared after sending.
+  -- Clear the input buffer after sending commands
   clear_input = true,
 
-  -- Keymaps for global actions
   keymap = {
+    -- Send all buffer content to terminal
+    send_line = "<C-s>",
+    send_visual = "<C-s>",
+    -- Pane management
     open = "<leader>to",
     close = "<leader>tc",
     toggle = "<leader>tt",
-    -- The following keymaps are local to the input buffer
-    send_line = '<C-s>',
-    send_visual = '<C-s>',
+    -- Terminal control
     clear = "<C-l>",
     interrupt = "<C-c>",
+    -- History navigation
+    history_prev = "<Up>",
+    history_next = "<Down>",
+    history_search = "<C-r>",
   },
 
-  -- Settings for the input buffer
   buffer = {
     filetype = "terminal_mate",
     bufname = "[TerminalMate]",
@@ -110,6 +120,10 @@ require("terminal_mate").setup({
 })
 ```
 
-## 📜 License
+## How History Works
+
+When the terminal pane is first opened, the plugin loads your zsh history from `$HISTFILE` (defaults to `~/.zsh_history`). If that file is not found, it falls back to `~/.bash_history`. Commands you send during the session are also added to the in-memory history. The history is deduplicated, keeping the most recent occurrence of each command.
+
+## License
 
 This project is licensed under the MIT License. See the [LICENSE](./LICENSE) file for details.

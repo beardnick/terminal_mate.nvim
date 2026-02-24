@@ -11,6 +11,8 @@ local state = {
   nvim_pane_id = nil,     -- tmux pane id where nvim runs
   input_buf = nil,        -- buffer number for the command input
   is_open = false,
+  history = {},           -- command history (loaded from zsh + session)
+  history_index = 0,      -- 0 = not browsing, 1 = most recent
 }
 
 --- Notify helper
@@ -18,6 +20,75 @@ local state = {
 ---@param level number|nil
 local function notify(msg, level)
   vim.notify("[TerminalMate] " .. msg, level or vim.log.levels.INFO)
+end
+
+--- Load zsh history from ~/.zsh_history
+---@return string[]
+local function load_zsh_history()
+  local history = {}
+  local history_file = vim.env.HISTFILE or (vim.env.HOME .. "/.zsh_history")
+
+  local f = io.open(history_file, "r")
+  if not f then
+    -- Try bash history as fallback
+    f = io.open(vim.env.HOME .. "/.bash_history", "r")
+  end
+  if not f then
+    return history
+  end
+
+  for line in f:lines() do
+    -- zsh extended history format: ": timestamp:0;command"
+    local cmd = line:match("^: %d+:%d+;(.+)$")
+    if cmd then
+      -- zsh extended format
+      cmd = vim.trim(cmd)
+      if cmd ~= "" then
+        table.insert(history, cmd)
+      end
+    else
+      -- plain format (bash or simple zsh)
+      line = vim.trim(line)
+      if line ~= "" and not line:match("^#") then
+        table.insert(history, line)
+      end
+    end
+  end
+  f:close()
+
+  return history
+end
+
+--- Deduplicate history, keeping last occurrence order
+---@param hist string[]
+---@return string[]
+local function dedupe_history(hist)
+  local seen = {}
+  local result = {}
+  -- Walk backwards so we keep the most recent occurrence
+  for i = #hist, 1, -1 do
+    if not seen[hist[i]] then
+      seen[hist[i]] = true
+      table.insert(result, 1, hist[i])
+    end
+  end
+  return result
+end
+
+--- Add a command to session history
+---@param cmd string
+local function add_to_history(cmd)
+  if cmd == "" then
+    return
+  end
+  -- Remove duplicates of this command
+  for i = #state.history, 1, -1 do
+    if state.history[i] == cmd then
+      table.remove(state.history, i)
+    end
+  end
+  table.insert(state.history, cmd)
+  state.history_index = 0
 end
 
 --- Create or get the input buffer
@@ -41,23 +112,29 @@ local function get_or_create_input_buf()
   return buf
 end
 
---- Get the text to send from the buffer
----@param mode string "line" for current line, "visual" for visual selection
+--- Get all non-empty lines from the current buffer as a single command block
 ---@return string
-local function get_text(mode)
-  if mode == "visual" then
-    -- Get visual selection
-    local start_pos = vim.fn.getpos("'<")
-    local end_pos = vim.fn.getpos("'>")
-    local start_line = start_pos[2]
-    local end_line = end_pos[2]
-    local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
-    return table.concat(lines, "\n")
-  else
-    -- Get current line
-    local line = vim.api.nvim_get_current_line()
-    return line
+local function get_buffer_text()
+  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
+  -- Filter out empty lines and collect
+  local non_empty = {}
+  for _, line in ipairs(lines) do
+    if vim.trim(line) ~= "" then
+      table.insert(non_empty, line)
+    end
   end
+  return table.concat(non_empty, "\n")
+end
+
+--- Get visual selection text
+---@return string
+local function get_visual_text()
+  local start_pos = vim.fn.getpos("'<")
+  local end_pos = vim.fn.getpos("'>")
+  local start_line = start_pos[2]
+  local end_line = end_pos[2]
+  local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
+  return table.concat(lines, "\n")
 end
 
 --- Send text to the terminal pane
@@ -79,15 +156,18 @@ local function send_to_terminal(text)
     end
   end
 
-  -- Send each line separately for multi-line input
+  -- Send each line separately
   local lines = vim.split(text, "\n", { plain = true, trimempty = false })
-  for i, line in ipairs(lines) do
-    if i > 1 then
-      -- For multi-line commands, use a small delay between lines
-      tmux.send_keys(state.terminal_pane_id, line, true)
-    else
-      tmux.send_keys(state.terminal_pane_id, line, true)
-    end
+  for _, line in ipairs(lines) do
+    tmux.send_keys(state.terminal_pane_id, line, true)
+  end
+end
+
+--- Clear the buffer content
+local function clear_buffer()
+  if config.options.clear_input then
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
   end
 end
 
@@ -103,6 +183,11 @@ function M.open()
       notify("Terminal pane is already open.")
       return
     end
+  end
+
+  -- Load zsh history on first open
+  if #state.history == 0 then
+    state.history = dedupe_history(load_zsh_history())
   end
 
   -- Record nvim's pane id
@@ -156,30 +241,31 @@ function M.toggle()
   end
 end
 
---- Send current line to terminal
-function M.send_line()
-  local text = get_text("line")
+--- Send all commands in the current buffer to terminal, keep current mode
+function M.send_buffer()
+  local text = get_buffer_text()
   if text == "" then
     return
   end
-  send_to_terminal(text)
 
-  if config.options.clear_input then
-    -- Clear the current line after sending
-    vim.api.nvim_set_current_line("")
-  end
+  -- Add to history before sending
+  add_to_history(text)
+
+  send_to_terminal(text)
+  clear_buffer()
 end
 
 --- Send visual selection to terminal
 function M.send_visual()
-  local text = get_text("visual")
+  local text = get_visual_text()
   if text == "" then
     return
   end
+
+  add_to_history(text)
   send_to_terminal(text)
 
   if config.options.clear_input then
-    -- Clear the selected lines after sending
     local start_pos = vim.fn.getpos("'<")
     local end_pos = vim.fn.getpos("'>")
     local start_line = start_pos[2]
@@ -212,8 +298,92 @@ end
 ---@param text string
 function M.send(text)
   if text and text ~= "" then
+    add_to_history(text)
     send_to_terminal(text)
   end
+end
+
+--- Navigate history: go to previous (older) command
+function M.history_prev()
+  if #state.history == 0 then
+    notify("No history available.", vim.log.levels.INFO)
+    return
+  end
+
+  if state.history_index == 0 then
+    -- Save current buffer content before browsing history
+    state._saved_input = get_buffer_text()
+  end
+
+  state.history_index = math.min(state.history_index + 1, #state.history)
+  local cmd = state.history[#state.history - state.history_index + 1]
+  if cmd then
+    local lines = vim.split(cmd, "\n", { plain = true })
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+    -- Move cursor to end
+    vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+  end
+end
+
+--- Navigate history: go to next (newer) command
+function M.history_next()
+  if state.history_index <= 0 then
+    return
+  end
+
+  state.history_index = state.history_index - 1
+
+  if state.history_index == 0 then
+    -- Restore saved input
+    local saved = state._saved_input or ""
+    local lines = vim.split(saved, "\n", { plain = true })
+    if #lines == 0 then
+      lines = { "" }
+    end
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+    vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+    return
+  end
+
+  local cmd = state.history[#state.history - state.history_index + 1]
+  if cmd then
+    local lines = vim.split(cmd, "\n", { plain = true })
+    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+    vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+  end
+end
+
+--- Search history with vim.ui.select (fuzzy picker)
+function M.history_search()
+  if #state.history == 0 then
+    notify("No history available.", vim.log.levels.INFO)
+    return
+  end
+
+  -- Show history in reverse order (most recent first)
+  local items = {}
+  for i = #state.history, 1, -1 do
+    table.insert(items, state.history[i])
+  end
+
+  vim.ui.select(items, {
+    prompt = "Command History> ",
+    format_item = function(item)
+      -- Truncate long commands for display, replace newlines
+      local display = item:gsub("\n", " \\ ")
+      if #display > 80 then
+        display = display:sub(1, 77) .. "..."
+      end
+      return display
+    end,
+  }, function(choice)
+    if choice then
+      local lines = vim.split(choice, "\n", { plain = true })
+      vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+      vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+      state.history_index = 0
+    end
+  end)
 end
 
 --- Get current state (for statusline integration etc.)
@@ -223,6 +393,7 @@ function M.get_state()
     is_open = state.is_open,
     terminal_pane_id = state.terminal_pane_id,
     nvim_pane_id = state.nvim_pane_id,
+    history_count = #state.history,
   }
 end
 
@@ -232,26 +403,57 @@ function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
 
-  -- Normal mode: send current line (default: <C-s>)
+  -- Normal mode: send all buffer content (default: <C-s>)
   vim.keymap.set("n", keymap.send_line, function()
-    M.send_line()
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current line" }))
+    M.send_buffer()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands" }))
 
   -- Visual mode: send selection (default: <C-s>)
   vim.keymap.set("v", keymap.send_visual, function()
-    -- Exit visual mode first so marks are set
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
     vim.schedule(function()
       M.send_visual()
     end)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send visual selection" }))
 
-  -- Insert mode: send current line with the configured key (default: <C-s>)
+  -- Insert mode: send all buffer content, stay in insert mode (default: <C-s>)
   vim.keymap.set("i", keymap.send_line, function()
+    local cursor = vim.fn.mode() -- remember we're in insert
     vim.cmd("stopinsert")
-    M.send_line()
+    M.send_buffer()
+    vim.cmd("startinsert")
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
+
+  -- History navigation: Up/Down arrows
+  vim.keymap.set("n", keymap.history_prev, function()
+    M.history_prev()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous history" }))
+
+  vim.keymap.set("n", keymap.history_next, function()
+    M.history_next()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Next history" }))
+
+  vim.keymap.set("i", keymap.history_prev, function()
+    vim.cmd("stopinsert")
+    M.history_prev()
     vim.cmd("startinsert!")
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send line (insert mode)" }))
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous history (insert)" }))
+
+  vim.keymap.set("i", keymap.history_next, function()
+    vim.cmd("stopinsert")
+    M.history_next()
+    vim.cmd("startinsert!")
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Next history (insert)" }))
+
+  -- History search
+  vim.keymap.set("n", keymap.history_search, function()
+    M.history_search()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search history" }))
+
+  vim.keymap.set("i", keymap.history_search, function()
+    vim.cmd("stopinsert")
+    M.history_search()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search history (insert)" }))
 
   -- Clear terminal
   vim.keymap.set("n", keymap.clear, function()
