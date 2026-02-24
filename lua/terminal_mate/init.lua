@@ -51,10 +51,11 @@ local function unmetafy(data)
 end
 
 --- Load shell history from zsh or bash history file.
---- For zsh extended history: reads the raw file, unmetafies it to recover UTF-8,
---- then splits entries by the ": timestamp:0;" prefix to correctly handle
---- multi-line commands (e.g., curl with JSON body containing real newlines).
---- For bash: falls back to reading ~/.bash_history line by line.
+--- Supports three formats that can coexist in the same file:
+---   1. Plain text lines (one command per line, no prefix)
+---   2. Zsh extended history lines (`: timestamp:0;command`)
+---   3. Multi-line commands using `\` or `\\` continuation at end of line
+--- For zsh files with metafied encoding, applies unmetafy() first.
 ---@return string[]
 local function load_zsh_history()
   local history = {}
@@ -71,50 +72,59 @@ local function load_zsh_history()
   local raw = f:read("*a")
   f:close()
 
-  -- Detect zsh extended history format
-  local is_zsh = raw:match("^: %d+:%d+;") ~= nil
+  -- Check if the file contains any metafied bytes (0x83 followed by another byte)
+  -- If so, unmetafy the entire content first
+  local content
+  if raw:find("\131") then
+    content = unmetafy(raw)
+  else
+    content = raw
+  end
 
-  if is_zsh then
-    -- Unmetafy the raw bytes to get proper UTF-8 content
-    local decoded = unmetafy(raw)
+  -- Helper: check if a line ends with backslash (continuation)
+  local function is_continuation(line)
+    -- Ends with \\ (double backslash) or single \ (but not \\\\)
+    return line:match("\\$") ~= nil
+  end
 
-    -- Split into entries by ": timestamp:0;" prefix.
-    -- Each entry starts with ": <digits>:<digits>;" on a new line.
-    -- Lines without this prefix are continuation lines of the previous entry.
-    local current_cmd = nil
-    for line in decoded:gmatch("[^\n]*") do
-      local cmd_start = line:match("^: %d+:%d+;(.*)$")
-      if cmd_start then
-        -- Save previous entry
-        if current_cmd then
-          local trimmed = vim.trim(current_cmd)
-          if trimmed ~= "" then
-            table.insert(history, trimmed)
-          end
-        end
-        current_cmd = cmd_start
-      elseif current_cmd then
-        -- Continuation line of current multi-line command
-        current_cmd = current_cmd .. "\n" .. line
-      end
-    end
-    -- Save last entry
-    if current_cmd then
-      local trimmed = vim.trim(current_cmd)
-      if trimmed ~= "" then
+  -- Helper: save a completed command entry
+  local function save_entry(cmd)
+    if cmd then
+      local trimmed = vim.trim(cmd)
+      if trimmed ~= "" and not trimmed:match("^#") then
         table.insert(history, trimmed)
       end
     end
-  else
-    -- Fallback: bash history or plain text (no metafied encoding)
-    local content = raw
-    for line in content:gmatch("[^\n]+") do
-      line = vim.trim(line)
-      if line ~= "" and not line:match("^#") then
-        table.insert(history, line)
+  end
+
+  -- Parse line by line, handling both plain and timestamp-prefixed formats.
+  -- Multi-line commands are joined when the current accumulated text ends with \.
+  local current_cmd = nil
+
+  for line in content:gmatch("[^\n]+") do
+    -- Check if this line starts a new timestamp-prefixed entry
+    local ts_cmd = line:match("^: %d+:%d+;(.*)$")
+
+    if ts_cmd then
+      -- Timestamp line always starts a new entry
+      save_entry(current_cmd)
+      current_cmd = ts_cmd
+    elseif current_cmd ~= nil and is_continuation(current_cmd) then
+      -- Previous line ended with \, so this is a continuation
+      current_cmd = current_cmd .. "\n" .. line
+    else
+      -- Not a continuation: save previous entry and start new one
+      save_entry(current_cmd)
+      if line ~= "" then
+        current_cmd = line
+      else
+        current_cmd = nil
       end
     end
   end
+
+  -- Save the last entry
+  save_entry(current_cmd)
 
   return history
 end
