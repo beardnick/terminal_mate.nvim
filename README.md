@@ -9,9 +9,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal expe
 - **Warp-like Layout**: A large terminal pane at the top for output, and a slim Neovim buffer at the bottom for command input.
 - **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then the buffer is cleared automatically.
 - **Stay in Current Mode**: After sending, you remain in whatever mode you were in (insert or normal).
+- **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them all at once.
-- **Seamless tmux Integration**: Automatically manages tmux panes for you.
+- **Seamless tmux Integration**: Reuses an adjacent tmux pane when available, or creates one above the current pane when needed.
 - **Configurable**: Customize keymaps, pane size, and more.
 
 ## Requirements
@@ -42,6 +43,16 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal expe
 5.  Press `Ctrl+S` to send **all buffer content** to the terminal pane.
 6.  The buffer is cleared and you stay in your current mode, ready for the next command.
 
+### Sending a Visual Selection From Any Buffer
+
+1.  In any buffer and any filetype, select text in Visual mode.
+2.  Press the configured visual send keymap (default: `Ctrl+S`) or run `:TerminalMateSendSelection`.
+3.  If TerminalMate already manages a pane, the selection is sent there.
+4.  Otherwise, if your current tmux window has an adjacent pane, the selection is sent to that pane.
+5.  If there is no adjacent pane, TerminalMate creates a new pane above the current one and sends the selection there.
+
+Adjacent pane detection prefers the pane above, then below, then left, then right.
+
 ### History Navigation
 
 - Press `Up` / `Down` to browse through previous commands (zsh history + session history).
@@ -55,6 +66,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal expe
 | `:TerminalMateClose` | Close the terminal pane |
 | `:TerminalMateToggle` | Toggle the terminal pane |
 | `:TerminalMateSend [cmd]` | Send current buffer or `[cmd]` to the terminal |
+| `:TerminalMateSendSelection` | Send the current visual selection to tmux |
 | `:TerminalMateClear` | Clear the terminal screen |
 | `:TerminalMateInterrupt` | Send Ctrl-C to the terminal |
 | `:TerminalMateHistorySearch` | Open history search picker |
@@ -79,6 +91,7 @@ Global keymaps:
 
 | Keymap        | Mode   | Description              |
 |---------------|--------|--------------------------|
+| `<C-s>`       | Visual | Send selected text to tmux from any buffer |
 | `<leader>to`  | Normal | Open the terminal pane   |
 | `<leader>tc`  | Normal | Close the terminal pane  |
 | `<leader>tt`  | Normal | Toggle the terminal pane |
@@ -99,6 +112,7 @@ require("terminal_mate").setup({
   keymap = {
     -- Send all buffer content to terminal
     send_line = "<C-s>",
+    -- Global visual-mode mapping that sends the current selection to tmux
     send_visual = "<C-s>",
     -- Pane management
     open = "<leader>to",

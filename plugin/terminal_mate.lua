@@ -23,9 +23,13 @@ vim.api.nvim_create_user_command("TerminalMateSend", function(opts)
   if opts.args and opts.args ~= "" then
     require("terminal_mate").send(opts.args)
   else
-    require("terminal_mate").send_line()
+    require("terminal_mate").send_buffer()
   end
 end, { nargs = "?", desc = "Send command to terminal_mate pane" })
+
+vim.api.nvim_create_user_command("TerminalMateSendSelection", function()
+  require("terminal_mate").send_visual()
+end, { range = true, desc = "Send the current visual selection to a tmux pane" })
 
 vim.api.nvim_create_user_command("TerminalMateClear", function()
   require("terminal_mate").clear()

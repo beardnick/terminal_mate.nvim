@@ -7,10 +7,10 @@ local M = {}
 
 --- State
 local state = {
-  terminal_pane_id = nil, -- tmux pane id of the upper terminal
+  terminal_pane_id = nil, -- tmux pane id managed by terminal_mate
   nvim_pane_id = nil,     -- tmux pane id where nvim runs
   input_buf = nil,        -- buffer number for the command input
-  is_open = false,
+  is_open = false,        -- true when the dedicated TerminalMate input UI is active
   history = {},           -- command history (loaded from zsh + session)
   history_index = 0,      -- 0 = not browsing, 1 = most recent
   _saved_nvim_height = nil, -- saved nvim pane height before search resize
@@ -268,32 +268,119 @@ local function get_buffer_text()
 end
 
 --- Get visual selection text
+---@param visual_type string|nil
 ---@return string
-local function get_visual_text()
+local function get_visual_text(visual_type)
   local start_pos = vim.fn.getpos("'<")
   local end_pos = vim.fn.getpos("'>")
-  local start_line = start_pos[2]
-  local end_line = end_pos[2]
-  local lines = vim.api.nvim_buf_get_lines(0, start_line - 1, end_line, false)
+  local selection_type = visual_type or vim.fn.visualmode()
+
+  if vim.fn.exists("*getregion") == 1 then
+    local region = vim.fn.getregion(start_pos, end_pos, { type = selection_type })
+    return table.concat(region, "\n")
+  end
+
+  local start_row = start_pos[2] - 1
+  local start_col = start_pos[3] - 1
+  local end_row = end_pos[2] - 1
+  local end_col = end_pos[3] - 1
+
+  if start_row > end_row or (start_row == end_row and start_col > end_col) then
+    start_row, end_row = end_row, start_row
+    start_col, end_col = end_col, start_col
+  end
+
+  if selection_type == "V" then
+    local lines = vim.api.nvim_buf_get_lines(0, start_row, end_row + 1, false)
+    return table.concat(lines, "\n")
+  end
+
+  if selection_type == "\22" then
+    local left = math.min(start_col, end_col)
+    local right = math.max(start_col, end_col) + 1
+    local lines = {}
+    for row = start_row, end_row do
+      local line = vim.api.nvim_buf_get_lines(0, row, row + 1, false)[1] or ""
+      local line_end = math.min(#line, right)
+      local chunk = vim.api.nvim_buf_get_text(0, row, left, row, line_end, {})[1] or ""
+      table.insert(lines, chunk)
+    end
+    return table.concat(lines, "\n")
+  end
+
+  local lines = vim.api.nvim_buf_get_text(0, start_row, start_col, end_row, end_col + 1, {})
   return table.concat(lines, "\n")
 end
 
---- Send text to the terminal pane
+local function get_managed_terminal_pane()
+  if state.terminal_pane_id and tmux.pane_exists(state.terminal_pane_id) then
+    return state.terminal_pane_id
+  end
+
+  state.terminal_pane_id = nil
+  return nil
+end
+
+local function ensure_managed_terminal_pane()
+  if not tmux.is_tmux() then
+    notify("Not running inside tmux! terminal_mate requires tmux.", vim.log.levels.ERROR)
+    return nil
+  end
+
+  local pane_id = get_managed_terminal_pane()
+  if pane_id then
+    return pane_id
+  end
+
+  state.nvim_pane_id = tmux.current_pane_id()
+  pane_id = tmux.split_above(config.options.split_percent, config.options.shell)
+  if not pane_id then
+    notify("Failed to create tmux split.", vim.log.levels.ERROR)
+    return nil
+  end
+
+  state.terminal_pane_id = pane_id
+  return pane_id
+end
+
+local function ensure_send_target()
+  local pane_id = get_managed_terminal_pane()
+  if pane_id then
+    return pane_id
+  end
+
+  if not tmux.is_tmux() then
+    notify("Not running inside tmux! terminal_mate requires tmux.", vim.log.levels.ERROR)
+    return nil
+  end
+
+  local current_pane_id = tmux.current_pane_id()
+  if not current_pane_id then
+    notify("Failed to determine the current tmux pane.", vim.log.levels.ERROR)
+    return nil
+  end
+
+  state.nvim_pane_id = current_pane_id
+
+  local adjacent_pane_id = tmux.find_adjacent_pane(current_pane_id)
+  if adjacent_pane_id and tmux.pane_exists(adjacent_pane_id) then
+    return adjacent_pane_id
+  end
+
+  return ensure_managed_terminal_pane()
+end
+
+--- Send text to a tmux pane
+---@param pane_id string
 ---@param text string
-local function send_to_terminal(text)
-  if not state.is_open or not state.terminal_pane_id then
-    notify("Terminal pane is not open. Run :TerminalMateOpen first.", vim.log.levels.WARN)
+local function send_to_pane(pane_id, text)
+  if not pane_id or text == "" then
     return
   end
 
-  if not tmux.pane_exists(state.terminal_pane_id) then
-    notify("Terminal pane no longer exists. Reopening...", vim.log.levels.WARN)
-    state.is_open = false
-    state.terminal_pane_id = nil
-    M.open()
-    if not state.terminal_pane_id then
-      return
-    end
+  if not tmux.pane_exists(pane_id) then
+    notify("Target tmux pane no longer exists.", vim.log.levels.WARN)
+    return
   end
 
   -- Smart multi-line send:
@@ -324,8 +411,28 @@ local function send_to_terminal(text)
 
   -- Send each block as a whole unit
   for _, block in ipairs(blocks) do
-    tmux.send_text(state.terminal_pane_id, block, true)
+    tmux.send_text(pane_id, block, true)
   end
+end
+
+--- Send text to the managed terminal pane
+---@param text string
+local function send_to_terminal(text)
+  if not state.is_open and not get_managed_terminal_pane() then
+    notify("Terminal pane is not open. Run :TerminalMateOpen first.", vim.log.levels.WARN)
+    return
+  end
+
+  local pane_id = get_managed_terminal_pane()
+  if not pane_id then
+    notify("Terminal pane no longer exists. Recreating...", vim.log.levels.WARN)
+    pane_id = ensure_managed_terminal_pane()
+    if not pane_id then
+      return
+    end
+  end
+
+  send_to_pane(pane_id, text)
 end
 
 --- Clear the buffer content
@@ -363,11 +470,9 @@ function M.open()
     return
   end
 
-  if state.is_open and state.terminal_pane_id then
-    if tmux.pane_exists(state.terminal_pane_id) then
-      notify("Terminal pane is already open.")
-      return
-    end
+  if state.is_open and get_managed_terminal_pane() then
+    notify("Terminal pane is already open.")
+    return
   end
 
   if #state.history == 0 then
@@ -376,13 +481,11 @@ function M.open()
 
   state.nvim_pane_id = tmux.current_pane_id()
 
-  local pane_id = tmux.split_above(config.options.split_percent, config.options.shell)
+  local pane_id = get_managed_terminal_pane() or ensure_managed_terminal_pane()
   if not pane_id then
-    notify("Failed to create tmux split.", vim.log.levels.ERROR)
     return
   end
 
-  state.terminal_pane_id = pane_id
   state.is_open = true
 
   -- Apply minimal UI: hide toolbar, statusline, cmdline
@@ -402,14 +505,13 @@ end
 
 --- Close the terminal pane
 function M.close()
-  if not state.is_open or not state.terminal_pane_id then
+  local pane_id = get_managed_terminal_pane()
+  if not pane_id then
     notify("No terminal pane to close.", vim.log.levels.WARN)
     return
   end
 
-  if tmux.pane_exists(state.terminal_pane_id) then
-    tmux.kill_pane(state.terminal_pane_id)
-  end
+  tmux.kill_pane(pane_id)
 
   state.terminal_pane_id = nil
   state.is_open = false
@@ -422,11 +524,10 @@ end
 
 --- Toggle the terminal pane
 function M.toggle()
-  if state.is_open and state.terminal_pane_id and tmux.pane_exists(state.terminal_pane_id) then
+  if state.is_open and get_managed_terminal_pane() then
     M.close()
   else
     state.is_open = false
-    state.terminal_pane_id = nil
     M.open()
   end
 end
@@ -443,15 +544,21 @@ function M.send_buffer()
 end
 
 --- Send visual selection to terminal
-function M.send_visual()
-  local text = get_visual_text()
+function M.send_visual(visual_type)
+  local text = get_visual_text(visual_type)
   if text == "" then
     return
   end
-  add_to_history(text)
-  send_to_terminal(text)
 
-  if config.options.clear_input then
+  local pane_id = ensure_send_target()
+  if not pane_id then
+    return
+  end
+
+  add_to_history(text)
+  send_to_pane(pane_id, text)
+
+  if config.options.clear_input and vim.api.nvim_get_current_buf() == state.input_buf then
     local start_pos = vim.fn.getpos("'<")
     local end_pos = vim.fn.getpos("'>")
     local start_line = start_pos[2]
@@ -466,18 +573,20 @@ end
 
 --- Send clear command to terminal
 function M.clear()
-  if not state.is_open or not state.terminal_pane_id then
+  local pane_id = get_managed_terminal_pane()
+  if not pane_id then
     return
   end
-  tmux.send_special_key(state.terminal_pane_id, "C-l")
+  tmux.send_special_key(pane_id, "C-l")
 end
 
 --- Send interrupt (Ctrl-C) to terminal
 function M.interrupt()
-  if not state.is_open or not state.terminal_pane_id then
+  local pane_id = get_managed_terminal_pane()
+  if not pane_id then
     return
   end
-  tmux.send_special_key(state.terminal_pane_id, "C-c")
+  tmux.send_special_key(pane_id, "C-c")
 end
 
 --- Send arbitrary text to terminal (for user commands)
@@ -772,9 +881,10 @@ function M._setup_buffer_keymaps(buf)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands" }))
 
   vim.keymap.set("v", keymap.send_visual, function()
+    local visual_type = vim.fn.visualmode()
     vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
     vim.schedule(function()
-      M.send_visual()
+      M.send_visual(visual_type)
     end)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send visual selection" }))
 
@@ -830,7 +940,7 @@ local function setup_autocmds()
     vim.api.nvim_create_autocmd("VimLeavePre", {
       group = group,
       callback = function()
-        if state.is_open and state.terminal_pane_id then
+        if state.terminal_pane_id then
           pcall(function()
             tmux.kill_pane(state.terminal_pane_id)
           end)
@@ -868,6 +978,14 @@ function M.setup(opts)
   vim.keymap.set("n", keymap.toggle, function()
     M.toggle()
   end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Toggle terminal pane" }))
+
+  vim.keymap.set("x", keymap.send_visual, function()
+    local visual_type = vim.fn.visualmode()
+    vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "x", false)
+    vim.schedule(function()
+      M.send_visual(visual_type)
+    end)
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Send visual selection to tmux" }))
 end
 
 return M
