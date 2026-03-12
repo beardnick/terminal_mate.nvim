@@ -80,7 +80,7 @@ Keymaps active in the `terminal_mate` input buffer:
 | Keymap   | Mode            | Description                             |
 |----------|-----------------|-----------------------------------------|
 | `<C-s>`  | Normal / Insert | Send all buffer content to terminal     |
-| `<C-s>`  | Visual          | Send visual selection to terminal       |
+| `<leader>ts` | Visual      | Send visual selection to terminal       |
 | `<Up>`   | Normal / Insert | Previous command from history           |
 | `<Down>` | Normal / Insert | Next command from history               |
 | `<C-r>`  | Normal / Insert | Search command history (fuzzy picker)   |
@@ -91,7 +91,7 @@ Global keymaps:
 
 | Keymap        | Mode   | Description              |
 |---------------|--------|--------------------------|
-| `<C-s>`       | Visual | Send selected text to tmux from any buffer |
+| `<leader>ts`  | Visual | Send selected text to tmux from any buffer |
 | `<leader>to`  | Normal | Open the terminal pane   |
 | `<leader>tc`  | Normal | Close the terminal pane  |
 | `<leader>tt`  | Normal | Toggle the terminal pane |
@@ -113,7 +113,7 @@ require("terminal_mate").setup({
     -- Send all buffer content to terminal
     send_line = "<C-s>",
     -- Global visual-mode mapping that sends the current selection to tmux
-    send_visual = "<C-s>",
+    send_visual = "<leader>ts",
     -- Pane management
     open = "<leader>to",
     close = "<leader>tc",
