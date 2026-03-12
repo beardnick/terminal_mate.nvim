@@ -1,5 +1,6 @@
 ---@class TerminalMateConfig
----@field split_percent number Percentage of terminal pane height (upper pane)
+---@field backend string Terminal backend selection mode: "auto", "nvim", or "tmux"
+---@field split_percent number Percentage of editor height used by the terminal pane
 ---@field shell string|nil Shell to use in the terminal pane (nil = default shell)
 ---@field close_on_exit boolean Close terminal pane when nvim exits
 ---@field auto_scroll boolean Auto scroll terminal pane to bottom after sending
@@ -26,6 +27,7 @@
 local M = {}
 
 M.defaults = {
+  backend = "auto",
   split_percent = 50,
   shell = nil,
   close_on_exit = true,
@@ -55,6 +57,10 @@ M.options = vim.deepcopy(M.defaults)
 ---@param opts table|nil
 function M.setup(opts)
   M.options = vim.tbl_deep_extend("force", vim.deepcopy(M.defaults), opts or {})
+
+  if not vim.tbl_contains({ "auto", "nvim", "tmux" }, M.options.backend) then
+    error("terminal_mate: backend must be one of 'auto', 'nvim', or 'tmux'")
+  end
 end
 
 return M

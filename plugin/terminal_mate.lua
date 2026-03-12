@@ -29,7 +29,7 @@ end, { nargs = "?", desc = "Send command to terminal_mate pane" })
 
 vim.api.nvim_create_user_command("TerminalMateSendSelection", function()
   require("terminal_mate").send_visual()
-end, { range = true, desc = "Send the current visual selection to a tmux pane" })
+end, { range = true, desc = "Send the current visual selection to the active terminal backend" })
 
 vim.api.nvim_create_user_command("TerminalMateClear", function()
   require("terminal_mate").clear()
