@@ -26,7 +26,7 @@
 local M = {}
 
 M.defaults = {
-  split_percent = 80,
+  split_percent = 50,
   shell = nil,
   close_on_exit = true,
   auto_scroll = true,

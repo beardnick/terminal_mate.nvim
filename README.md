@@ -101,7 +101,7 @@ Global keymaps:
 ```lua
 require("terminal_mate").setup({
   -- Percentage of screen the top terminal pane occupies
-  split_percent = 80,
+  split_percent = 50,
   -- Shell to run in the new pane (nil = default shell)
   shell = nil,
   -- Close terminal pane when exiting Neovim
