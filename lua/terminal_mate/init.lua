@@ -263,8 +263,15 @@ local function get_visual_text(visual_type)
   local selection_type = visual_type or vim.fn.visualmode()
 
   if vim.fn.exists("*getregion") == 1 then
-    local region = vim.fn.getregion(start_pos, end_pos, { type = selection_type })
-    return table.concat(region, "\n")
+    local ok_region, region = pcall(vim.fn.getregion, start_pos, end_pos, { type = selection_type })
+    if not ok_region then
+      -- Compatibility path for older Neovim builds where getregion() expects
+      -- the type as a plain third argument instead of an opts table.
+      ok_region, region = pcall(vim.fn.getregion, start_pos, end_pos, selection_type)
+    end
+    if ok_region and type(region) == "table" then
+      return table.concat(region, "\n")
+    end
   end
 
   local start_row = start_pos[2] - 1
