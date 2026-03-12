@@ -49,7 +49,7 @@ local function normalize_shell_command(candidate)
   return cmd
 end
 
-local function resolve_shell(opts)
+local function resolve_shell_candidates(opts)
   local candidates = {
     opts.shell,
     vim.env.SHELL,
@@ -60,21 +60,17 @@ local function resolve_shell(opts)
     "sh",
   }
 
-  local first_non_empty = nil
-
+  local out = {}
+  local seen = {}
   for _, candidate in ipairs(candidates) do
     local cmd = normalize_shell_command(candidate)
-    if cmd then
-      first_non_empty = first_non_empty or cmd
-      local bin = cmd:match("^([^%s]+)")
-      if bin and vim.fn.executable(bin) == 1 then
-        return cmd
-      end
+    if cmd and not seen[cmd] then
+      table.insert(out, cmd)
+      seen[cmd] = true
     end
   end
 
-  -- If detection is inconclusive, let termopen try the first non-empty shell command.
-  return first_non_empty
+  return out
 end
 
 local function pick_split_anchor_win()
@@ -127,18 +123,25 @@ function M.open(state, opts)
   vim.bo[terminal_buf].bufhidden = "hide"
   vim.bo[terminal_buf].swapfile = false
 
-  local shell = resolve_shell(opts)
-  if not shell then
+  local shell_candidates = resolve_shell_candidates(opts)
+  if #shell_candidates == 0 then
     pcall(vim.api.nvim_win_close, terminal_win, true)
     pcall(vim.api.nvim_buf_delete, terminal_buf, { force = true })
-    return false, "Failed to resolve a valid shell executable for Neovim terminal."
+    return false, "No shell candidates found (checked opts.shell, $SHELL, vim.o.shell)."
   end
 
-  local job_id = vim.fn.termopen(shell)
+  local job_id = -1
+  for _, shell in ipairs(shell_candidates) do
+    job_id = vim.fn.termopen(shell)
+    if job_id > 0 then
+      break
+    end
+  end
+
   if job_id <= 0 then
     pcall(vim.api.nvim_win_close, terminal_win, true)
     pcall(vim.api.nvim_buf_delete, terminal_buf, { force = true })
-    return false, "Failed to start the Neovim terminal shell: " .. shell
+    return false, "Failed to start Neovim terminal shell candidates: " .. table.concat(shell_candidates, ", ")
   end
 
   pcall(vim.api.nvim_buf_set_name, terminal_buf, "[TerminalMateTerminal]")
