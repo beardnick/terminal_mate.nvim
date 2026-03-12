@@ -158,9 +158,16 @@ function M.send_text(state, text, press_enter)
     return false, "Neovim terminal is not running."
   end
 
-  vim.api.nvim_chan_send(state.terminal_job_id, text)
+  local ok_send, err_send = pcall(vim.api.nvim_chan_send, state.terminal_job_id, text)
+  if not ok_send then
+    return false, "Failed to send to Neovim terminal: " .. tostring(err_send)
+  end
+
   if press_enter then
-    vim.api.nvim_chan_send(state.terminal_job_id, "\r")
+    local ok_enter, err_enter = pcall(vim.api.nvim_chan_send, state.terminal_job_id, "\r")
+    if not ok_enter then
+      return false, "Failed to send Enter to Neovim terminal: " .. tostring(err_enter)
+    end
   end
 
   if state.terminal_win and vim.api.nvim_win_is_valid(state.terminal_win) then
@@ -191,7 +198,11 @@ function M.send_special_key(state, key)
     return false, "Unsupported Neovim terminal key: " .. key
   end
 
-  vim.api.nvim_chan_send(state.terminal_job_id, code)
+  local ok_send, err_send = pcall(vim.api.nvim_chan_send, state.terminal_job_id, code)
+  if not ok_send then
+    return false, "Failed to send special key to Neovim terminal: " .. tostring(err_send)
+  end
+
   return true, nil
 end
 

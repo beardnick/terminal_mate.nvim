@@ -566,6 +566,16 @@ local function send_to_target(backend, target, text)
       if state.backend == "nvim" then
         state.backend = nil
       end
+
+      if tmux.is_tmux() then
+        local fallback_target = ensure_managed_tmux_pane()
+        if fallback_target then
+          tmux.send_text(fallback_target, block, true)
+          state.backend = "tmux"
+          return
+        end
+      end
+
       return
     end
   end
