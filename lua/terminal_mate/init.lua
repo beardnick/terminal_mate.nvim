@@ -1,20 +1,25 @@
---- terminal_mate.nvim - Warp-like terminal experience for Neovim + tmux
---- Upper pane: terminal output | Lower pane: Neovim command editor
+--- terminal_mate.nvim - Warp-like terminal experience for Neovim
+--- Terminal backend defaults to Neovim's built-in terminal and falls back to tmux.
 local config = require("terminal_mate.config")
+local nvim_terminal = require("terminal_mate.nvim_terminal")
 local tmux = require("terminal_mate.tmux")
 
 local M = {}
 
 --- State
 local state = {
-  terminal_pane_id = nil, -- tmux pane id managed by terminal_mate
-  nvim_pane_id = nil,     -- tmux pane id where nvim runs
-  input_buf = nil,        -- buffer number for the command input
-  is_open = false,        -- true when the dedicated TerminalMate input UI is active
-  history = {},           -- command history (loaded from zsh + session)
-  history_index = 0,      -- 0 = not browsing, 1 = most recent
-  _saved_nvim_height = nil, -- saved nvim pane height before search resize
-  _saved_ui = nil,          -- saved UI options to restore on close
+  backend = nil,             -- active backend: "nvim" or "tmux"
+  terminal_pane_id = nil,    -- tmux pane id managed by terminal_mate
+  terminal_win = nil,        -- Neovim terminal window id
+  terminal_buf = nil,        -- Neovim terminal buffer id
+  terminal_job_id = nil,     -- Neovim terminal job/channel id
+  nvim_pane_id = nil,        -- tmux pane id where nvim runs
+  input_buf = nil,           -- buffer number for the command input
+  is_open = false,           -- true when the dedicated TerminalMate input UI is active
+  history = {},              -- command history (loaded from zsh + session)
+  history_index = 0,         -- 0 = not browsing, 1 = most recent
+  _saved_nvim_height = nil,  -- saved nvim pane height before search resize
+  _saved_ui = nil,           -- saved UI options to restore on close
 }
 
 --- Save current UI options and apply minimal UI for TerminalMate mode
@@ -30,12 +35,12 @@ local function apply_minimal_ui()
     number = vim.wo.number,
     relativenumber = vim.wo.relativenumber,
   }
-  vim.o.cmdheight = 0       -- hide command line
-  vim.o.laststatus = 0      -- hide status line
-  vim.o.showtabline = 0     -- hide tab line / toolbar
-  vim.o.ruler = false       -- hide ruler
-  vim.o.showmode = false    -- hide -- INSERT -- etc.
-  vim.o.showcmd = false     -- hide partial commands
+  vim.o.cmdheight = 0
+  vim.o.laststatus = 0
+  vim.o.showtabline = 0
+  vim.o.ruler = false
+  vim.o.showmode = false
+  vim.o.showcmd = false
 end
 
 --- Restore saved UI options
@@ -43,18 +48,20 @@ local function restore_ui()
   if not state._saved_ui then
     return
   end
+
   vim.o.cmdheight = state._saved_ui.cmdheight
   vim.o.laststatus = state._saved_ui.laststatus
   vim.o.showtabline = state._saved_ui.showtabline
   vim.o.ruler = state._saved_ui.ruler
   vim.o.showmode = state._saved_ui.showmode
   vim.o.showcmd = state._saved_ui.showcmd
-  -- Restore window-local options only if the window still exists
+
   pcall(function()
     vim.wo.signcolumn = state._saved_ui.signcolumn
     vim.wo.number = state._saved_ui.number
     vim.wo.relativenumber = state._saved_ui.relativenumber
   end)
+
   state._saved_ui = nil
 end
 
@@ -77,10 +84,10 @@ local function unmetafy(data)
   local i = 1
   local len = #data
   local META = 0x83
+
   while i <= len do
     local byte = data:byte(i)
     if byte == META and i < len then
-      -- Next byte is XOR'd with 0x20
       local next_byte = data:byte(i + 1)
       table.insert(result, string.char(bit.bxor(next_byte, 0x20)))
       i = i + 2
@@ -89,6 +96,7 @@ local function unmetafy(data)
       i = i + 1
     end
   end
+
   return table.concat(result)
 end
 
@@ -103,7 +111,6 @@ local function load_zsh_history()
   local history = {}
   local history_file = vim.env.HISTFILE or (vim.env.HOME .. "/.zsh_history")
 
-  -- Read the file as binary
   local f = io.open(history_file, "rb")
   if not f then
     f = io.open(vim.env.HOME .. "/.bash_history", "rb")
@@ -111,11 +118,10 @@ local function load_zsh_history()
   if not f then
     return history
   end
+
   local raw = f:read("*a")
   f:close()
 
-  -- Check if the file contains any metafied bytes (0x83 followed by another byte)
-  -- If so, unmetafy the entire content first
   local content
   if raw:find("\131") then
     content = unmetafy(raw)
@@ -123,26 +129,15 @@ local function load_zsh_history()
     content = raw
   end
 
-  -- In zsh history files, line-ending backslashes have two meanings:
-  --   \\  (0x5c 0x5c) at EOL = actual command has \ (shell continuation)
-  --   \   (0x5c)      at EOL = history file continuation (no \ in actual cmd)
-  -- Both mean "this line continues on the next line" for parsing purposes.
-
-  -- Helper: check if a line ends with backslash (continuation)
   local function is_continuation(line)
     return line:match("\\$") ~= nil
   end
 
-  -- Helper: unescape a completed command entry from history file format
-  -- to actual command format:
-  --   \\\n  → \\\n   (double backslash EOL → single backslash, keep newline)
-  --   \\n   → \n      (single backslash EOL → remove backslash, keep newline)
   local function unescape_history(cmd)
     local lines = {}
     for line in cmd:gmatch("[^\n]+") do
       table.insert(lines, line)
     end
-    -- Also handle trailing empty parts
     if cmd:match("\n$") then
       table.insert(lines, "")
     end
@@ -150,11 +145,9 @@ local function load_zsh_history()
     local result = {}
     for _, line in ipairs(lines) do
       if line:match("\\\\$") then
-        -- Line ends with \\\\ → actual command has \\ (shell continuation)
-        table.insert(result, line:sub(1, -2))  -- remove one backslash
+        table.insert(result, line:sub(1, -2))
       elseif line:match("\\$") then
-        -- Line ends with single \\ → history continuation, no \\ in actual cmd
-        table.insert(result, line:sub(1, -2))  -- remove the backslash
+        table.insert(result, line:sub(1, -2))
       else
         table.insert(result, line)
       end
@@ -162,34 +155,28 @@ local function load_zsh_history()
     return table.concat(result, "\n")
   end
 
-  -- Helper: save a completed command entry
   local function save_entry(cmd)
-    if cmd then
-      local unescaped = unescape_history(cmd)
-      local trimmed = vim.trim(unescaped)
-      if trimmed ~= "" and not trimmed:match("^#") then
-        table.insert(history, trimmed)
-      end
+    if not cmd then
+      return
+    end
+
+    local unescaped = unescape_history(cmd)
+    local trimmed = vim.trim(unescaped)
+    if trimmed ~= "" and not trimmed:match("^#") then
+      table.insert(history, trimmed)
     end
   end
 
-  -- Parse line by line, handling both plain and timestamp-prefixed formats.
-  -- Multi-line commands are joined when the current accumulated text ends with \.
   local current_cmd = nil
-
   for line in content:gmatch("[^\n]+") do
-    -- Check if this line starts a new timestamp-prefixed entry
     local ts_cmd = line:match("^: %d+:%d+;(.*)$")
 
     if ts_cmd then
-      -- Timestamp line always starts a new entry
       save_entry(current_cmd)
       current_cmd = ts_cmd
     elseif current_cmd ~= nil and is_continuation(current_cmd) then
-      -- Previous line ended with \, so this is a continuation
       current_cmd = current_cmd .. "\n" .. line
     else
-      -- Not a continuation: save previous entry and start new one
       save_entry(current_cmd)
       if line ~= "" then
         current_cmd = line
@@ -199,9 +186,7 @@ local function load_zsh_history()
     end
   end
 
-  -- Save the last entry
   save_entry(current_cmd)
-
   return history
 end
 
@@ -226,11 +211,13 @@ local function add_to_history(cmd)
   if cmd == "" then
     return
   end
+
   for i = #state.history, 1, -1 do
     if state.history[i] == cmd then
       table.remove(state.history, i)
     end
   end
+
   table.insert(state.history, cmd)
   state.history_index = 0
 end
@@ -312,23 +299,102 @@ local function get_visual_text(visual_type)
   return table.concat(lines, "\n")
 end
 
-local function get_managed_terminal_pane()
+local function reset_tmux_state()
+  state.terminal_pane_id = nil
+  state.nvim_pane_id = nil
+end
+
+local function reset_nvim_terminal_state()
+  nvim_terminal.reset(state)
+end
+
+---@return boolean
+local function has_tmux_terminal()
   if state.terminal_pane_id and tmux.pane_exists(state.terminal_pane_id) then
-    return state.terminal_pane_id
+    return true
   end
 
-  state.terminal_pane_id = nil
+  reset_tmux_state()
+  if state.backend == "tmux" then
+    state.backend = nil
+  end
+  return false
+end
+
+---@return boolean
+local function has_nvim_terminal()
+  if nvim_terminal.is_alive(state) then
+    return true
+  end
+
+  reset_nvim_terminal_state()
+  if state.backend == "nvim" then
+    state.backend = nil
+  end
+  return false
+end
+
+---@return string|nil
+local function get_active_backend()
+  if state.backend == "nvim" and has_nvim_terminal() then
+    return "nvim"
+  end
+  if state.backend == "tmux" and has_tmux_terminal() then
+    return "tmux"
+  end
+  if has_nvim_terminal() then
+    state.backend = "nvim"
+    return "nvim"
+  end
+  if has_tmux_terminal() then
+    state.backend = "tmux"
+    return "tmux"
+  end
+
+  state.backend = nil
   return nil
 end
 
-local function ensure_managed_terminal_pane()
+---@return string[]
+local function preferred_backends()
+  if config.options.backend == "nvim" then
+    return { "nvim" }
+  end
+  if config.options.backend == "tmux" then
+    return { "tmux" }
+  end
+  return { "nvim", "tmux" }
+end
+
+---@param backend string
+---@return boolean
+local function backend_is_available(backend)
+  if backend == "nvim" then
+    -- Defer strict capability checks to ensure_nvim_terminal(); it has better
+    -- diagnostics and fallback handling than a boolean gate here.
+    return true
+  end
+  return tmux.is_tmux()
+end
+
+---@return string|nil
+local function get_managed_tmux_pane()
+  if has_tmux_terminal() then
+    return state.terminal_pane_id
+  end
+  return nil
+end
+
+---@return string|nil
+local function ensure_managed_tmux_pane()
   if not tmux.is_tmux() then
-    notify("Not running inside tmux! terminal_mate requires tmux.", vim.log.levels.ERROR)
+    notify("tmux backend is unavailable outside a tmux session.", vim.log.levels.ERROR)
     return nil
   end
 
-  local pane_id = get_managed_terminal_pane()
+  local pane_id = get_managed_tmux_pane()
   if pane_id then
+    state.backend = "tmux"
     return pane_id
   end
 
@@ -339,100 +405,209 @@ local function ensure_managed_terminal_pane()
     return nil
   end
 
+  state.backend = "tmux"
   state.terminal_pane_id = pane_id
   return pane_id
 end
 
-local function ensure_send_target()
-  local pane_id = get_managed_terminal_pane()
-  if pane_id then
-    return pane_id
+---@return boolean
+local function ensure_nvim_terminal()
+  if has_nvim_terminal() then
+    state.backend = "nvim"
+    return true
   end
 
-  if not tmux.is_tmux() then
-    notify("Not running inside tmux! terminal_mate requires tmux.", vim.log.levels.ERROR)
-    return nil
+  local ok, err = nvim_terminal.open(state, {
+    split_percent = config.options.split_percent,
+    shell = config.options.shell,
+  })
+  if not ok then
+    notify(err or "Failed to open Neovim terminal.", vim.log.levels.ERROR)
+    return false
   end
 
-  local current_pane_id = tmux.current_pane_id()
-  if not current_pane_id then
-    notify("Failed to determine the current tmux pane.", vim.log.levels.ERROR)
-    return nil
-  end
-
-  state.nvim_pane_id = current_pane_id
-
-  local adjacent_pane_id = tmux.find_adjacent_pane(current_pane_id)
-  if adjacent_pane_id and tmux.pane_exists(adjacent_pane_id) then
-    return adjacent_pane_id
-  end
-
-  return ensure_managed_terminal_pane()
+  state.backend = "nvim"
+  return true
 end
 
---- Send text to a tmux pane
----@param pane_id string
+---@return string|nil
+---@return string|nil
+local function ensure_managed_terminal()
+  local active_backend = get_active_backend()
+  if active_backend == "nvim" then
+    return "nvim", "nvim"
+  end
+  if active_backend == "tmux" then
+    return "tmux", state.terminal_pane_id
+  end
+
+  for _, backend in ipairs(preferred_backends()) do
+    if backend == "nvim" and backend_is_available("nvim") then
+      if ensure_nvim_terminal() then
+        return "nvim", "nvim"
+      end
+      if config.options.backend == "nvim" then
+        return nil, nil
+      end
+    elseif backend == "tmux" and backend_is_available("tmux") then
+      local pane_id = ensure_managed_tmux_pane()
+      if pane_id then
+        return "tmux", pane_id
+      end
+      if config.options.backend == "tmux" then
+        return nil, nil
+      end
+    end
+  end
+
+  notify("No terminal backend is available.", vim.log.levels.ERROR)
+  return nil, nil
+end
+
+---@return string|nil
+---@return string|nil
+local function ensure_send_target()
+  local active_backend = get_active_backend()
+  if active_backend == "nvim" then
+    return "nvim", "nvim"
+  end
+  if active_backend == "tmux" then
+    return "tmux", state.terminal_pane_id
+  end
+
+  for _, backend in ipairs(preferred_backends()) do
+    if backend == "nvim" and backend_is_available("nvim") then
+      if ensure_nvim_terminal() then
+        return "nvim", "nvim"
+      end
+      if config.options.backend == "nvim" then
+        return nil, nil
+      end
+    elseif backend == "tmux" and backend_is_available("tmux") then
+      local current_pane_id = tmux.current_pane_id()
+      if current_pane_id then
+        state.nvim_pane_id = current_pane_id
+        local adjacent_pane_id = tmux.find_adjacent_pane(current_pane_id)
+        if adjacent_pane_id and tmux.pane_exists(adjacent_pane_id) then
+          return "tmux", adjacent_pane_id
+        end
+      end
+
+      local pane_id = ensure_managed_tmux_pane()
+      if pane_id then
+        return "tmux", pane_id
+      end
+      if config.options.backend == "tmux" then
+        return nil, nil
+      end
+    end
+  end
+
+  notify(
+    "No terminal target is available. Check :set shell? and terminal backend config (:h terminal-mate).",
+    vim.log.levels.ERROR
+  )
+  return nil, nil
+end
+
 ---@param text string
-local function send_to_pane(pane_id, text)
-  if not pane_id or text == "" then
-    return
-  end
-
-  if not tmux.pane_exists(pane_id) then
-    notify("Target tmux pane no longer exists.", vim.log.levels.WARN)
-    return
-  end
-
-  -- Smart multi-line send:
-  -- Lines ending with \ are shell continuation lines.
-  -- For these, send the line text + literal newline (not Enter),
-  -- so the shell sees it as one continuous command.
-  -- Only press Enter on the final line or non-continuation lines.
+---@return string[]
+local function build_command_blocks(text)
   local lines = vim.split(text, "\n", { plain = true, trimempty = false })
-
-  -- Group lines into command blocks:
-  -- A block is a sequence of continuation lines ending with a final line.
   local blocks = {}
   local current_block = {}
+
   for _, line in ipairs(lines) do
     table.insert(current_block, line)
-    -- Check if line ends with \ (continuation)
     local trimmed = vim.trim(line)
     if trimmed:sub(-1) ~= "\\" then
-      -- End of block
       table.insert(blocks, table.concat(current_block, "\n"))
       current_block = {}
     end
   end
-  -- If there are remaining lines (shouldn't happen normally)
+
   if #current_block > 0 then
     table.insert(blocks, table.concat(current_block, "\n"))
   end
 
-  -- Send each block as a whole unit
+  return blocks
+end
+
+---@param backend string
+---@param target string
+---@param text string
+local function send_to_target(backend, target, text)
+  if text == "" then
+    return
+  end
+
+  local blocks = build_command_blocks(text)
+
+  if backend == "tmux" then
+    if not target or not tmux.pane_exists(target) then
+      notify("Target tmux pane no longer exists.", vim.log.levels.WARN)
+      if state.terminal_pane_id == target then
+        reset_tmux_state()
+      end
+      return
+    end
+
+    for _, block in ipairs(blocks) do
+      tmux.send_text(target, block, true)
+    end
+    return
+  end
+
   for _, block in ipairs(blocks) do
-    tmux.send_text(pane_id, block, true)
+    local ok, err = nvim_terminal.send_text(state, block, true)
+    if not ok then
+      notify(err or "Failed to send to Neovim terminal.", vim.log.levels.WARN)
+      reset_nvim_terminal_state()
+      if state.backend == "nvim" then
+        state.backend = nil
+      end
+
+      if tmux.is_tmux() then
+        local fallback_target = ensure_managed_tmux_pane()
+        if fallback_target then
+          tmux.send_text(fallback_target, block, true)
+          state.backend = "tmux"
+          return
+        end
+      end
+
+      return
+    end
   end
 end
 
---- Send text to the managed terminal pane
 ---@param text string
 local function send_to_terminal(text)
-  if not state.is_open and not get_managed_terminal_pane() then
+  if text == "" then
+    return
+  end
+
+  local active_backend = get_active_backend()
+  if not state.is_open and not active_backend then
     notify("Terminal pane is not open. Run :TerminalMateOpen first.", vim.log.levels.WARN)
     return
   end
 
-  local pane_id = get_managed_terminal_pane()
-  if not pane_id then
-    notify("Terminal pane no longer exists. Recreating...", vim.log.levels.WARN)
-    pane_id = ensure_managed_terminal_pane()
-    if not pane_id then
-      return
-    end
+  local backend = active_backend
+  local target = nil
+  if backend == "tmux" then
+    target = state.terminal_pane_id
+  elseif backend == "nvim" then
+    target = "nvim"
+  else
+    backend, target = ensure_managed_terminal()
   end
 
-  send_to_pane(pane_id, text)
+  if not backend then
+    return
+  end
+
+  send_to_target(backend, target, text)
 end
 
 --- Clear the buffer content
@@ -445,78 +620,92 @@ end
 
 --- Temporarily resize nvim pane to 50% for search, save original height
 local function expand_nvim_pane_for_search()
-  if not state.nvim_pane_id then
+  if get_active_backend() ~= "tmux" or not state.nvim_pane_id then
     return
   end
-  -- Save current height
+
   state._saved_nvim_height = tmux.get_pane_height(state.nvim_pane_id)
-  -- Resize nvim pane to 50%
   tmux.resize_pane_percent(state.nvim_pane_id, 50)
 end
 
 --- Restore nvim pane to original height after search
 local function restore_nvim_pane_size()
-  if not state.nvim_pane_id or not state._saved_nvim_height then
+  if get_active_backend() ~= "tmux" or not state.nvim_pane_id or not state._saved_nvim_height then
     return
   end
+
   tmux.resize_pane_rows(state.nvim_pane_id, state._saved_nvim_height)
   state._saved_nvim_height = nil
 end
 
+local function ensure_history_loaded()
+  if #state.history == 0 then
+    state.history = dedupe_history(load_zsh_history())
+  end
+end
+
 --- Open the terminal pane
 function M.open()
-  if not tmux.is_tmux() then
-    notify("Not running inside tmux! terminal_mate requires tmux.", vim.log.levels.ERROR)
-    return
-  end
-
-  if state.is_open and get_managed_terminal_pane() then
+  local active_backend = get_active_backend()
+  if state.is_open and active_backend then
     notify("Terminal pane is already open.")
     return
   end
 
-  if #state.history == 0 then
-    state.history = dedupe_history(load_zsh_history())
-  end
+  ensure_history_loaded()
 
-  state.nvim_pane_id = tmux.current_pane_id()
-
-  local pane_id = get_managed_terminal_pane() or ensure_managed_terminal_pane()
-  if not pane_id then
-    return
+  local backend = active_backend
+  local target = nil
+  if not backend then
+    backend, target = ensure_managed_terminal()
+    if not backend then
+      return
+    end
+  elseif backend == "tmux" then
+    target = state.terminal_pane_id
+  else
+    target = "nvim"
   end
 
   state.is_open = true
-
-  -- Apply minimal UI: hide toolbar, statusline, cmdline
   apply_minimal_ui()
 
   local buf = get_or_create_input_buf()
   vim.api.nvim_set_current_buf(buf)
   M._setup_buffer_keymaps(buf)
 
-  -- Also hide line numbers and sign column in the input buffer window
   vim.wo.signcolumn = "no"
   vim.wo.number = false
   vim.wo.relativenumber = false
 
-  notify("Terminal pane opened (" .. pane_id .. ")")
+  if backend == "tmux" then
+    notify("Terminal pane opened (" .. target .. ", tmux backend)")
+  else
+    notify("Terminal pane opened (Neovim backend)")
+  end
 end
 
 --- Close the terminal pane
 function M.close()
-  local pane_id = get_managed_terminal_pane()
-  if not pane_id then
+  local active_backend = get_active_backend()
+  if not active_backend then
+    if state.is_open then
+      state.is_open = false
+      restore_ui()
+    end
     notify("No terminal pane to close.", vim.log.levels.WARN)
     return
   end
 
-  tmux.kill_pane(pane_id)
+  if active_backend == "tmux" then
+    tmux.kill_pane(state.terminal_pane_id)
+    reset_tmux_state()
+  else
+    nvim_terminal.close(state)
+  end
 
-  state.terminal_pane_id = nil
+  state.backend = nil
   state.is_open = false
-
-  -- Restore UI options
   restore_ui()
 
   notify("Terminal pane closed.")
@@ -524,7 +713,7 @@ end
 
 --- Toggle the terminal pane
 function M.toggle()
-  if state.is_open and get_managed_terminal_pane() then
+  if state.is_open and get_active_backend() then
     M.close()
   else
     state.is_open = false
@@ -538,6 +727,7 @@ function M.send_buffer()
   if text == "" then
     return
   end
+
   add_to_history(text)
   send_to_terminal(text)
   clear_buffer()
@@ -550,13 +740,13 @@ function M.send_visual(visual_type)
     return
   end
 
-  local pane_id = ensure_send_target()
-  if not pane_id then
+  local backend, target = ensure_send_target()
+  if not backend then
     return
   end
 
   add_to_history(text)
-  send_to_pane(pane_id, text)
+  send_to_target(backend, target, text)
 
   if config.options.clear_input and vim.api.nvim_get_current_buf() == state.input_buf then
     local start_pos = vim.fn.getpos("'<")
@@ -573,20 +763,28 @@ end
 
 --- Send clear command to terminal
 function M.clear()
-  local pane_id = get_managed_terminal_pane()
-  if not pane_id then
-    return
+  local active_backend = get_active_backend()
+  if active_backend == "tmux" then
+    tmux.send_special_key(state.terminal_pane_id, "C-l")
+  elseif active_backend == "nvim" then
+    local ok, err = nvim_terminal.send_special_key(state, "C-l")
+    if not ok then
+      notify(err or "Failed to clear Neovim terminal.", vim.log.levels.WARN)
+    end
   end
-  tmux.send_special_key(pane_id, "C-l")
 end
 
 --- Send interrupt (Ctrl-C) to terminal
 function M.interrupt()
-  local pane_id = get_managed_terminal_pane()
-  if not pane_id then
-    return
+  local active_backend = get_active_backend()
+  if active_backend == "tmux" then
+    tmux.send_special_key(state.terminal_pane_id, "C-c")
+  elseif active_backend == "nvim" then
+    local ok, err = nvim_terminal.send_special_key(state, "C-c")
+    if not ok then
+      notify(err or "Failed to interrupt Neovim terminal.", vim.log.levels.WARN)
+    end
   end
-  tmux.send_special_key(pane_id, "C-c")
 end
 
 --- Send arbitrary text to terminal (for user commands)
@@ -653,6 +851,7 @@ local function fuzzy_match(str, query)
   if query == "" then
     return true
   end
+
   local lower_str = str:lower()
   local lower_q = query:lower()
   local si = 1
@@ -668,7 +867,7 @@ local function fuzzy_match(str, query)
 end
 
 --- Built-in floating window history search
---- Expands nvim pane to 50% while searching, restores on close
+--- Expands the tmux nvim pane while searching when the tmux backend is active.
 function M.history_search()
   if #state.history == 0 then
     notify("No history available.", vim.log.levels.INFO)
@@ -676,18 +875,13 @@ function M.history_search()
   end
 
   local caller_buf = state.input_buf
-
-  -- Expand nvim pane to 50% so the float has room
   expand_nvim_pane_for_search()
 
-  -- Build items in reverse order (most recent first)
   local all_items = {}
   for i = #state.history, 1, -1 do
     table.insert(all_items, state.history[i])
   end
 
-  -- Calculate float dimensions based on editor size (after resize)
-  -- Use a small delay to let tmux resize propagate
   vim.defer_fn(function()
     local ui = vim.api.nvim_list_uis()[1] or { width = 80, height = 24 }
     local float_width = math.min(math.floor(ui.width * 0.9), 140)
@@ -695,16 +889,13 @@ function M.history_search()
     local row = math.max(math.floor((ui.height - float_height) / 2) - 1, 0)
     local col = math.floor((ui.width - float_width) / 2)
 
-    -- Create results buffer
     local results_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[results_buf].bufhidden = "wipe"
 
-    -- Create input buffer (single line)
     local input_buf = vim.api.nvim_create_buf(false, true)
     vim.bo[input_buf].bufhidden = "wipe"
     vim.bo[input_buf].buftype = "nofile"
 
-    -- Open results window
     local results_win = vim.api.nvim_open_win(results_buf, false, {
       relative = "editor",
       width = float_width,
@@ -719,7 +910,6 @@ function M.history_search()
     vim.api.nvim_win_set_option(results_win, "cursorline", true)
     vim.api.nvim_win_set_option(results_win, "winhighlight", "CursorLine:PmenuSel,Normal:Normal")
 
-    -- Open input window below results
     local input_win = vim.api.nvim_open_win(input_buf, true, {
       relative = "editor",
       width = float_width,
@@ -748,8 +938,12 @@ function M.history_search()
       vim.api.nvim_buf_set_lines(results_buf, 0, -1, false, display_lines)
       vim.api.nvim_buf_set_option(results_buf, "modifiable", false)
 
-      if picker.selected < 1 then picker.selected = 1 end
-      if picker.selected > #picker.filtered then picker.selected = #picker.filtered end
+      if picker.selected < 1 then
+        picker.selected = 1
+      end
+      if picker.selected > #picker.filtered then
+        picker.selected = #picker.filtered
+      end
 
       if #picker.filtered > 0 and vim.api.nvim_win_is_valid(results_win) then
         vim.api.nvim_win_set_cursor(results_win, { picker.selected, 0 })
@@ -770,7 +964,9 @@ function M.history_search()
 
     local closed = false
     local function close_picker()
-      if closed then return end
+      if closed then
+        return
+      end
       closed = true
       if vim.api.nvim_win_is_valid(input_win) then
         vim.api.nvim_win_close(input_win, true)
@@ -778,7 +974,6 @@ function M.history_search()
       if vim.api.nvim_win_is_valid(results_win) then
         vim.api.nvim_win_close(results_win, true)
       end
-      -- Restore nvim pane size
       restore_nvim_pane_size()
     end
 
@@ -799,11 +994,9 @@ function M.history_search()
       end
     end
 
-    -- Initial render
     update_filter()
     vim.cmd("startinsert")
 
-    -- Keymaps
     local kopts = { buffer = input_buf, noremap = true, silent = true }
 
     vim.keymap.set({ "i", "n" }, "<Esc>", function()
@@ -856,7 +1049,7 @@ function M.history_search()
         end)
       end,
     })
-  end, 50) -- small delay for tmux resize to take effect
+  end, 50)
 end
 
 --- Get current state (for statusline integration etc.)
@@ -864,7 +1057,10 @@ end
 function M.get_state()
   return {
     is_open = state.is_open,
+    backend = get_active_backend(),
     terminal_pane_id = state.terminal_pane_id,
+    terminal_buf = state.terminal_buf,
+    terminal_win = state.terminal_win,
     nvim_pane_id = state.nvim_pane_id,
     history_count = #state.history,
   }
@@ -940,7 +1136,7 @@ local function setup_autocmds()
     vim.api.nvim_create_autocmd("VimLeavePre", {
       group = group,
       callback = function()
-        if state.terminal_pane_id then
+        if has_tmux_terminal() then
           pcall(function()
             tmux.kill_pane(state.terminal_pane_id)
           end)
@@ -954,15 +1150,19 @@ end
 ---@param opts table|nil
 function M.setup(opts)
   config.setup(opts)
+  setup_autocmds()
 
-  if not tmux.is_tmux() then
+  if config.options.backend == "tmux" and not tmux.is_tmux() then
     notify(
-      "Not running inside tmux. terminal_mate will be available but cannot open terminal panes.",
+      "Configured tmux backend is unavailable outside a tmux session.",
+      vim.log.levels.WARN
+    )
+  elseif config.options.backend ~= "tmux" and not nvim_terminal.is_available() and not tmux.is_tmux() then
+    notify(
+      "No supported terminal backend is available. Install a Neovim build with :terminal support or run inside tmux.",
       vim.log.levels.WARN
     )
   end
-
-  setup_autocmds()
 
   local keymap = config.options.keymap
   local gopts = { noremap = true, silent = true }
@@ -985,7 +1185,7 @@ function M.setup(opts)
     vim.schedule(function()
       M.send_visual(visual_type)
     end)
-  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Send visual selection to tmux" }))
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Send visual selection to terminal" }))
 end
 
 return M
