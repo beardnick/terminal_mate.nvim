@@ -32,40 +32,17 @@ function M.reset(state)
   state.terminal_job_id = nil
 end
 
-local function normalize_shell_command(candidate)
-  if type(candidate) ~= "string" then
-    return nil
-  end
-
-  local cmd = vim.trim(candidate)
-  if cmd == "" then
-    return nil
-  end
-
-  -- Accept quoted shell paths like '"/bin/zsh" -l'.
-  cmd = cmd:gsub('^"([^"]+)"', "%1")
-  cmd = cmd:gsub("^'([^']+)'", "%1")
-
-  return cmd
-end
-
 local function resolve_shell(opts)
   local candidates = {
     opts.shell,
     vim.env.SHELL,
     vim.o.shell,
-    "/bin/zsh",
-    "/bin/bash",
-    "/bin/sh",
     "sh",
   }
 
-  local first_non_empty = nil
-
   for _, candidate in ipairs(candidates) do
-    local cmd = normalize_shell_command(candidate)
-    if cmd then
-      first_non_empty = first_non_empty or cmd
+    if type(candidate) == "string" and candidate ~= "" then
+      local cmd = vim.trim(candidate)
       local bin = cmd:match("^([^%s]+)")
       if bin and vim.fn.executable(bin) == 1 then
         return cmd
@@ -73,8 +50,7 @@ local function resolve_shell(opts)
     end
   end
 
-  -- If detection is inconclusive, let termopen try the first non-empty shell command.
-  return first_non_empty
+  return nil
 end
 
 local function pick_split_anchor_win()
