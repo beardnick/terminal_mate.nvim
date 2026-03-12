@@ -70,10 +70,6 @@ local function resolve_shell_candidates(opts)
     end
   end
 
-  if #out == 0 then
-    out = { "/bin/sh", "sh" }
-  end
-
   return out
 end
 
