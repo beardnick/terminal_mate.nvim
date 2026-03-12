@@ -370,7 +370,9 @@ end
 ---@return boolean
 local function backend_is_available(backend)
   if backend == "nvim" then
-    return nvim_terminal.is_available()
+    -- Defer strict capability checks to ensure_nvim_terminal(); it has better
+    -- diagnostics and fallback handling than a boolean gate here.
+    return true
   end
   return tmux.is_tmux()
 end
@@ -501,7 +503,10 @@ local function ensure_send_target()
     end
   end
 
-  notify("No terminal target is available.", vim.log.levels.ERROR)
+  notify(
+    "No terminal target is available. Check :set shell? and terminal backend config (:h terminal-mate).",
+    vim.log.levels.ERROR
+  )
   return nil, nil
 end
 
