@@ -32,6 +32,44 @@ function M.reset(state)
   state.terminal_job_id = nil
 end
 
+local function resolve_shell(opts)
+  local candidates = {
+    opts.shell,
+    vim.env.SHELL,
+    vim.o.shell,
+    "sh",
+  }
+
+  for _, candidate in ipairs(candidates) do
+    if type(candidate) == "string" and candidate ~= "" then
+      local cmd = vim.trim(candidate)
+      local bin = cmd:match("^([^%s]+)")
+      if bin and vim.fn.executable(bin) == 1 then
+        return cmd
+      end
+    end
+  end
+
+  return nil
+end
+
+local function pick_split_anchor_win()
+  local current = vim.api.nvim_get_current_win()
+  local current_cfg = vim.api.nvim_win_get_config(current)
+  if current_cfg.relative == "" then
+    return current
+  end
+
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local cfg = vim.api.nvim_win_get_config(win)
+    if cfg.relative == "" and vim.api.nvim_win_is_valid(win) then
+      return win
+    end
+  end
+
+  return current
+end
+
 ---@param state table
 ---@param opts table
 ---@return boolean
@@ -45,7 +83,11 @@ function M.open(state, opts)
     return true, nil
   end
 
-  local editor_win = vim.api.nvim_get_current_win()
+  local editor_win = pick_split_anchor_win()
+  if vim.api.nvim_win_is_valid(editor_win) then
+    vim.api.nvim_set_current_win(editor_win)
+  end
+
   local editor_height = vim.api.nvim_win_get_height(editor_win)
   local terminal_height = math.max(3, math.floor(editor_height * (opts.split_percent / 100)))
 
@@ -61,12 +103,18 @@ function M.open(state, opts)
   vim.bo[terminal_buf].bufhidden = "hide"
   vim.bo[terminal_buf].swapfile = false
 
-  local shell = opts.shell or vim.o.shell
+  local shell = resolve_shell(opts)
+  if not shell then
+    pcall(vim.api.nvim_win_close, terminal_win, true)
+    pcall(vim.api.nvim_buf_delete, terminal_buf, { force = true })
+    return false, "Failed to resolve a valid shell executable for Neovim terminal."
+  end
+
   local job_id = vim.fn.termopen(shell)
   if job_id <= 0 then
     pcall(vim.api.nvim_win_close, terminal_win, true)
     pcall(vim.api.nvim_buf_delete, terminal_buf, { force = true })
-    return false, "Failed to start the Neovim terminal shell."
+    return false, "Failed to start the Neovim terminal shell: " .. shell
   end
 
   pcall(vim.api.nvim_buf_set_name, terminal_buf, "[TerminalMateTerminal]")
