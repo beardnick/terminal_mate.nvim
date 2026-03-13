@@ -24,22 +24,24 @@ function M.is_available()
   return vim.fn.exists("*termopen") == 1
 end
 
----@param state table
+---@param terminal table|nil
 ---@return boolean
-function M.is_alive(state)
-  return state.terminal_buf ~= nil
-    and vim.api.nvim_buf_is_valid(state.terminal_buf)
-    and job_is_running(state.terminal_job_id)
+function M.is_alive(terminal)
+  return terminal ~= nil
+    and terminal.buf ~= nil
+    and vim.api.nvim_buf_is_valid(terminal.buf)
+    and job_is_running(terminal.job_id)
 end
 
----@param state table
-function M.reset(state)
-  state.terminal_win = nil
-  state.terminal_buf = nil
-  state.terminal_job_id = nil
-  state.terminal_shell_command = nil
-  state.terminal_shell_source = nil
-  state.terminal_shell_diagnostics = nil
+---@param terminal table
+function M.reset(terminal)
+  terminal.win = nil
+  terminal.buf = nil
+  terminal.job_id = nil
+  terminal.shell_command = nil
+  terminal.shell_source = nil
+  terminal.shell_diagnostics = nil
+  terminal.last_error = nil
 end
 
 ---@param value any
@@ -213,12 +215,42 @@ local function format_failure_details(diagnostics, attempts)
   return table.concat(parts, " | ")
 end
 
----@param state table
+---@param terminal table
 ---@param message string
 ---@return string
-local function remember_error(state, message)
-  state.terminal_last_error = message
+local function remember_error(terminal, message)
+  terminal.last_error = message
   return message
+end
+
+local function pick_split_anchor_win()
+  local current = vim.api.nvim_get_current_win()
+  local current_cfg = vim.api.nvim_win_get_config(current)
+  if current_cfg.relative == "" then
+    return current
+  end
+
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    local cfg = vim.api.nvim_win_get_config(win)
+    if cfg.relative == "" and vim.api.nvim_win_is_valid(win) then
+      return win
+    end
+  end
+
+  return current
+end
+
+---@param preferred_win number|nil
+---@return number|nil
+local function normalize_window(preferred_win)
+  if preferred_win and vim.api.nvim_win_is_valid(preferred_win) then
+    local cfg = vim.api.nvim_win_get_config(preferred_win)
+    if cfg.relative == "" then
+      return preferred_win
+    end
+  end
+
+  return nil
 end
 
 ---@param terminal_win number
@@ -233,15 +265,60 @@ local function prepare_terminal_buffer(terminal_win)
   return terminal_buf
 end
 
----@param terminal_win number
+---@param terminal_win number|nil
 ---@param terminal_buf number|nil
 local function cleanup_terminal_window(terminal_win, terminal_buf)
   if terminal_buf and vim.api.nvim_buf_is_valid(terminal_buf) then
     pcall(vim.api.nvim_buf_delete, terminal_buf, { force = true })
   end
-  if vim.api.nvim_win_is_valid(terminal_win) then
+  if terminal_win and vim.api.nvim_win_is_valid(terminal_win) then
     pcall(vim.api.nvim_win_close, terminal_win, true)
   end
+end
+
+---@param terminal_win number
+local function configure_terminal_window(terminal_win)
+  if not vim.api.nvim_win_is_valid(terminal_win) then
+    return
+  end
+
+  vim.wo[terminal_win].number = false
+  vim.wo[terminal_win].relativenumber = false
+  vim.wo[terminal_win].signcolumn = "no"
+end
+
+---@param terminal_win number|nil
+---@param buffer number|nil
+local function restore_window_buffer(terminal_win, buffer)
+  if terminal_win and buffer and vim.api.nvim_win_is_valid(terminal_win) and vim.api.nvim_buf_is_valid(buffer) then
+    pcall(vim.api.nvim_win_set_buf, terminal_win, buffer)
+  end
+end
+
+---@param split_percent number
+---@param reuse_win number|nil
+---@return number|nil editor_win
+---@return number|nil terminal_win
+local function open_terminal_window(split_percent, reuse_win)
+  local existing_win = normalize_window(reuse_win)
+  if existing_win then
+    return pick_split_anchor_win(), existing_win
+  end
+
+  local editor_win = pick_split_anchor_win()
+  if vim.api.nvim_win_is_valid(editor_win) then
+    vim.api.nvim_set_current_win(editor_win)
+  end
+
+  local editor_height = vim.api.nvim_win_get_height(editor_win)
+  local terminal_height = math.max(3, math.floor(editor_height * (split_percent / 100)))
+
+  local ok = pcall(vim.cmd, "botright " .. terminal_height .. "split")
+  if not ok then
+    return nil, nil
+  end
+
+  return editor_win, vim.api.nvim_get_current_win()
 end
 
 ---@param job_id number|nil
@@ -264,25 +341,22 @@ local function describe_job_status(job_id)
   return "exit code " .. tostring(status)
 end
 
----@param state table
+---@param terminal table
 ---@return string
-local function build_not_running_error(state)
+local function build_not_running_error(terminal)
   local details = {}
 
-  if state.terminal_job_id ~= nil then
-    table.insert(details, "job=" .. tostring(state.terminal_job_id) .. " (" .. describe_job_status(state.terminal_job_id) .. ")")
+  if terminal.job_id ~= nil then
+    table.insert(details, "job=" .. tostring(terminal.job_id) .. " (" .. describe_job_status(terminal.job_id) .. ")")
   end
-  if state.terminal_shell_command then
-    table.insert(
-      details,
-      "last shell=" .. string.format("%q", state.terminal_shell_command) .. " from " .. tostring(state.terminal_shell_source)
-    )
+  if terminal.shell_command then
+    table.insert(details, "last shell=" .. string.format("%q", terminal.shell_command) .. " from " .. tostring(terminal.shell_source))
   end
-  if state.terminal_shell_diagnostics then
-    table.insert(details, "candidates=" .. state.terminal_shell_diagnostics)
+  if terminal.shell_diagnostics then
+    table.insert(details, "candidates=" .. terminal.shell_diagnostics)
   end
-  if state.terminal_last_error then
-    table.insert(details, "last error=" .. state.terminal_last_error)
+  if terminal.last_error then
+    table.insert(details, "last error=" .. terminal.last_error)
   end
 
   if #details == 0 then
@@ -292,58 +366,41 @@ local function build_not_running_error(state)
   return "Neovim terminal is not running (" .. table.concat(details, "; ") .. ")"
 end
 
-local function pick_split_anchor_win()
-  local current = vim.api.nvim_get_current_win()
-  local current_cfg = vim.api.nvim_win_get_config(current)
-  if current_cfg.relative == "" then
-    return current
-  end
-
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    local cfg = vim.api.nvim_win_get_config(win)
-    if cfg.relative == "" and vim.api.nvim_win_is_valid(win) then
-      return win
-    end
-  end
-
-  return current
-end
-
----@param state table
+---@param terminal table
 ---@param opts table
 ---@return boolean
 ---@return string|nil
-function M.open(state, opts)
+function M.create(terminal, opts)
   if not M.is_available() then
-    return false, remember_error(state, "Neovim terminal backend is unavailable.")
+    return false, remember_error(terminal, "Neovim terminal backend is unavailable.")
   end
 
-  if M.is_alive(state) then
-    state.terminal_last_error = nil
+  if M.is_alive(terminal) then
+    terminal.last_error = nil
     return true, nil
   end
 
-  local editor_win = pick_split_anchor_win()
-  if vim.api.nvim_win_is_valid(editor_win) then
-    vim.api.nvim_set_current_win(editor_win)
+  local previous_win = vim.api.nvim_get_current_win()
+  local reuse_win = normalize_window(opts.reuse_win)
+  local previous_buf = reuse_win and vim.api.nvim_win_get_buf(reuse_win) or nil
+  local editor_win, terminal_win = open_terminal_window(opts.split_percent, reuse_win)
+  if not terminal_win then
+    return false, remember_error(terminal, "Failed to open a Neovim terminal split.")
   end
 
-  local editor_height = vim.api.nvim_win_get_height(editor_win)
-  local terminal_height = math.max(3, math.floor(editor_height * (opts.split_percent / 100)))
-
-  local ok = pcall(vim.cmd, "botright " .. terminal_height .. "split")
-  if not ok then
-    return false, remember_error(state, "Failed to open a Neovim terminal split.")
-  end
-
-  local terminal_win = vim.api.nvim_get_current_win()
   local terminal_buf = prepare_terminal_buffer(terminal_win)
 
   local shell_candidates, shell_diagnostics = resolve_shell_candidates(opts)
   if #shell_candidates == 0 then
-    cleanup_terminal_window(terminal_win, terminal_buf)
+    restore_window_buffer(reuse_win, previous_buf)
+    cleanup_terminal_window(reuse_win and nil or terminal_win, terminal_buf)
+    if editor_win and vim.api.nvim_win_is_valid(editor_win) then
+      vim.api.nvim_set_current_win(editor_win)
+    elseif previous_win and vim.api.nvim_win_is_valid(previous_win) then
+      vim.api.nvim_set_current_win(previous_win)
+    end
     return false, remember_error(
-      state,
+      terminal,
       "Failed to resolve a usable shell for Neovim terminal (" .. format_failure_details(shell_diagnostics) .. ")"
     )
   end
@@ -378,39 +435,83 @@ function M.open(state, opts)
   end
 
   if not active_candidate or not job_id then
-    cleanup_terminal_window(terminal_win, terminal_buf)
+    restore_window_buffer(reuse_win, previous_buf)
+    cleanup_terminal_window(reuse_win and nil or terminal_win, terminal_buf)
+    if editor_win and vim.api.nvim_win_is_valid(editor_win) then
+      vim.api.nvim_set_current_win(editor_win)
+    elseif previous_win and vim.api.nvim_win_is_valid(previous_win) then
+      vim.api.nvim_set_current_win(previous_win)
+    end
     return false, remember_error(
-      state,
+      terminal,
       "Failed to start a Neovim terminal shell (" .. format_failure_details(shell_diagnostics, attempts) .. ")"
     )
   end
 
-  pcall(vim.api.nvim_buf_set_name, terminal_buf, "[TerminalMateTerminal]")
-  vim.wo[terminal_win].number = false
-  vim.wo[terminal_win].relativenumber = false
-  vim.wo[terminal_win].signcolumn = "no"
+  pcall(vim.api.nvim_buf_set_name, terminal_buf, string.format("[TerminalMateTerminal:%s]", terminal.id or "nvim"))
+  configure_terminal_window(terminal_win)
 
-  state.terminal_win = terminal_win
-  state.terminal_buf = terminal_buf
-  state.terminal_job_id = job_id
-  state.terminal_shell_command = active_candidate.command
-  state.terminal_shell_source = active_candidate.source
-  state.terminal_shell_diagnostics = table.concat(shell_diagnostics, "; ")
-  state.terminal_last_error = nil
+  terminal.win = terminal_win
+  terminal.buf = terminal_buf
+  terminal.job_id = job_id
+  terminal.shell_command = active_candidate.command
+  terminal.shell_source = active_candidate.source
+  terminal.shell_diagnostics = table.concat(shell_diagnostics, "; ")
+  terminal.last_error = nil
 
-  if vim.api.nvim_win_is_valid(editor_win) then
+  if editor_win and vim.api.nvim_win_is_valid(editor_win) then
     vim.api.nvim_set_current_win(editor_win)
+  elseif previous_win and vim.api.nvim_win_is_valid(previous_win) then
+    vim.api.nvim_set_current_win(previous_win)
   end
 
   return true, nil
 end
 
----@param state table
-function M.close(state)
-  local terminal_win = state.terminal_win
-  local terminal_buf = state.terminal_buf
+---@param terminal table
+---@param opts table
+---@return boolean
+---@return string|nil
+function M.show(terminal, opts)
+  if not M.is_alive(terminal) then
+    terminal.win = nil
+    return false, build_not_running_error(terminal)
+  end
 
-  M.reset(state)
+  local previous_win = vim.api.nvim_get_current_win()
+  local reuse_win = normalize_window(opts.reuse_win) or normalize_window(terminal.win)
+  local editor_win, terminal_win = open_terminal_window(opts.split_percent, reuse_win)
+  if not terminal_win then
+    return false, remember_error(terminal, "Failed to open a Neovim terminal split.")
+  end
+
+  terminal.win = terminal_win
+  vim.api.nvim_win_set_buf(terminal_win, terminal.buf)
+  configure_terminal_window(terminal_win)
+
+  if editor_win and vim.api.nvim_win_is_valid(editor_win) then
+    vim.api.nvim_set_current_win(editor_win)
+  elseif previous_win and vim.api.nvim_win_is_valid(previous_win) then
+    vim.api.nvim_set_current_win(previous_win)
+  end
+
+  return true, nil
+end
+
+---@param terminal table
+function M.hide(terminal)
+  if terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
+    pcall(vim.api.nvim_win_close, terminal.win, true)
+  end
+  terminal.win = nil
+end
+
+---@param terminal table
+function M.close(terminal)
+  local terminal_win = terminal.win
+  local terminal_buf = terminal.buf
+
+  M.reset(terminal)
 
   if terminal_win and vim.api.nvim_win_is_valid(terminal_win) then
     pcall(vim.api.nvim_win_close, terminal_win, true)
@@ -420,43 +521,43 @@ function M.close(state)
   end
 end
 
----@param state table
+---@param terminal table
 ---@param text string
 ---@param press_enter boolean
 ---@return boolean
 ---@return string|nil
-function M.send_text(state, text, press_enter)
-  if not M.is_alive(state) then
-    return false, build_not_running_error(state)
+function M.send_text(terminal, text, press_enter)
+  if not M.is_alive(terminal) then
+    return false, build_not_running_error(terminal)
   end
 
-  local ok_send, err_send = pcall(vim.api.nvim_chan_send, state.terminal_job_id, text)
+  local ok_send, err_send = pcall(vim.api.nvim_chan_send, terminal.job_id, text)
   if not ok_send then
-    return false, remember_error(state, "Failed to send to Neovim terminal: " .. tostring(err_send))
+    return false, remember_error(terminal, "Failed to send to Neovim terminal: " .. tostring(err_send))
   end
 
   if press_enter then
-    local ok_enter, err_enter = pcall(vim.api.nvim_chan_send, state.terminal_job_id, "\r")
+    local ok_enter, err_enter = pcall(vim.api.nvim_chan_send, terminal.job_id, "\r")
     if not ok_enter then
-      return false, remember_error(state, "Failed to send Enter to Neovim terminal: " .. tostring(err_enter))
+      return false, remember_error(terminal, "Failed to send Enter to Neovim terminal: " .. tostring(err_enter))
     end
   end
 
-  if state.terminal_win and vim.api.nvim_win_is_valid(state.terminal_win) then
-    local line_count = vim.api.nvim_buf_line_count(state.terminal_buf)
-    pcall(vim.api.nvim_win_set_cursor, state.terminal_win, { math.max(line_count, 1), 0 })
+  if terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
+    local line_count = vim.api.nvim_buf_line_count(terminal.buf)
+    pcall(vim.api.nvim_win_set_cursor, terminal.win, { math.max(line_count, 1), 0 })
   end
 
   return true, nil
 end
 
----@param state table
+---@param terminal table
 ---@param key string
 ---@return boolean
 ---@return string|nil
-function M.send_special_key(state, key)
-  if not M.is_alive(state) then
-    return false, build_not_running_error(state)
+function M.send_special_key(terminal, key)
+  if not M.is_alive(terminal) then
+    return false, build_not_running_error(terminal)
   end
 
   local code = nil
@@ -470,9 +571,9 @@ function M.send_special_key(state, key)
     return false, "Unsupported Neovim terminal key: " .. key
   end
 
-  local ok_send, err_send = pcall(vim.api.nvim_chan_send, state.terminal_job_id, code)
+  local ok_send, err_send = pcall(vim.api.nvim_chan_send, terminal.job_id, code)
   if not ok_send then
-    return false, remember_error(state, "Failed to send special key to Neovim terminal: " .. tostring(err_send))
+    return false, remember_error(terminal, "Failed to send special key to Neovim terminal: " .. tostring(err_send))
   end
 
   return true, nil

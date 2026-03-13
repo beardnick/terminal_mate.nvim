@@ -7,10 +7,11 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ## Features
 
 - **Neovim-first backend**: `backend = "auto"` prefers Neovim's built-in terminal and falls back to tmux when needed.
-- **Terminal below the editor**: `:TerminalMateOpen` keeps you in a dedicated input buffer and opens the execution terminal underneath by default.
+- **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and keep that placement when you hide, reopen, or switch instances.
+- **Multiple terminal instances**: Create multiple managed Neovim terminals and keep sending to the most recently active one.
 - **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then clear the input buffer automatically.
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
-- **Terminal Control**: Clear the terminal or send `Ctrl-C` without leaving the input buffer.
+- **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
 - **tmux Fallback**: When you select the tmux backend, TerminalMate reuses an adjacent tmux pane when possible or creates one above the current pane.
@@ -36,17 +37,24 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ## Usage
 
 1. Run `:TerminalMateOpen` or press `<leader>to`.
-2. TerminalMate opens a dedicated input buffer and starts the configured backend.
-3. With the default `auto` backend, a Neovim terminal split opens below the editor.
+2. TerminalMate opens a dedicated input buffer and starts or reuses the configured backend.
+3. With the default `auto` backend, the latest managed Neovim terminal opens below the editor. If none exists, TerminalMate creates one.
 4. Type your command(s) in the input buffer.
-5. Press `Ctrl+S` to send the buffer to the terminal.
+5. Press `Ctrl+S` to send the buffer to the latest active terminal.
 6. The buffer is cleared and you stay ready for the next command.
+
+### Managing Multiple Terminals
+
+- Run `:TerminalMateNew` or press `<leader>tn` to create a new managed Neovim terminal instance.
+- Run `:TerminalMateHide` or press `<leader>th` to hide the current managed Neovim terminal without killing it.
+- `:TerminalMateOpen` shows the latest active terminal again.
+- Send operations prefer the latest active terminal, fall back to the next live terminal if needed, and create a new one when no managed terminal remains.
 
 ### Sending a Visual Selection From Any Buffer
 
 1. Select text in Visual mode from any buffer.
 2. Press the configured visual send keymap or run `:TerminalMateSendSelection`.
-3. If TerminalMate already manages a terminal, the selection is sent there.
+3. If TerminalMate already manages terminals, the selection is sent to the latest active one.
 4. Otherwise, TerminalMate creates or discovers a target using the active backend mode.
 5. In tmux mode, adjacent pane detection prefers above, then below, then left, then right.
 
@@ -60,8 +68,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 | Command | Description |
 |---------|-------------|
 | `:TerminalMateOpen` | Open the terminal pane |
+| `:TerminalMateNew` | Create a new terminal instance |
+| `:TerminalMateHide` | Hide the current managed Neovim terminal without killing it |
 | `:TerminalMateClose` | Close the terminal pane |
-| `:TerminalMateToggle` | Toggle the terminal pane |
+| `:TerminalMateToggle` | Toggle the current terminal pane visibility |
 | `:TerminalMateSend [cmd]` | Send current buffer or `[cmd]` to the terminal |
 | `:TerminalMateSendSelection` | Send the current visual selection to the active backend |
 | `:TerminalMateClear` | Clear the terminal screen |
@@ -78,6 +88,8 @@ Keymaps active in the `terminal_mate` input buffer:
 |--------|------|-------------|
 | `<C-s>` | Normal / Insert | Send all buffer content to terminal |
 | `<leader>ts` | Visual | Send visual selection to terminal |
+| `<leader>tn` | Normal | Create a new terminal instance |
+| `<leader>th` | Normal | Hide the current terminal pane |
 | `<Up>` | Normal / Insert | Previous command from history |
 | `<Down>` | Normal / Insert | Next command from history |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
@@ -90,6 +102,8 @@ Global keymaps:
 |--------|------|-------------|
 | `<leader>ts` | Visual | Send selected text to terminal from any buffer |
 | `<leader>to` | Normal | Open the terminal pane |
+| `<leader>tn` | Normal | Create a new terminal instance |
+| `<leader>th` | Normal | Hide the current terminal pane |
 | `<leader>tc` | Normal | Close the terminal pane |
 | `<leader>tt` | Normal | Toggle the terminal pane |
 
@@ -112,6 +126,8 @@ require("terminal_mate").setup({
     send_line = "<C-s>",
     send_visual = "<leader>ts",
     open = "<leader>to",
+    new_terminal = "<leader>tn",
+    hide = "<leader>th",
     close = "<leader>tc",
     toggle = "<leader>tt",
     clear = "<C-l>",

@@ -12,6 +12,8 @@
 ---@field send_line string Send all buffer content in normal/insert mode
 ---@field send_visual string Send visual selection
 ---@field open string Open terminal pane
+---@field new_terminal string Create a new terminal instance
+---@field hide string Hide the current terminal pane without killing it
 ---@field close string Close terminal pane
 ---@field toggle string Toggle terminal pane
 ---@field clear string Send clear to terminal
@@ -37,6 +39,8 @@ M.defaults = {
     send_line = "<C-s>",
     send_visual = "<leader>ts",
     open = "<leader>to",
+    new_terminal = "<leader>tn",
+    hide = "<leader>th",
     close = "<leader>tc",
     toggle = "<leader>tt",
     clear = "<C-l>",

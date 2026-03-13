@@ -10,13 +10,17 @@ local M = {}
 local state = {
   backend = nil,             -- active backend: "nvim" or "tmux"
   terminal_pane_id = nil,    -- tmux pane id managed by terminal_mate
-  terminal_win = nil,        -- Neovim terminal window id
-  terminal_buf = nil,        -- Neovim terminal buffer id
-  terminal_job_id = nil,     -- Neovim terminal job/channel id
-  terminal_shell_command = nil, -- shell command used for the managed Neovim terminal
-  terminal_shell_source = nil,  -- source used to resolve the managed Neovim terminal shell
-  terminal_shell_diagnostics = nil, -- shell candidate scan for Neovim terminal startup
-  terminal_last_error = nil, -- last Neovim terminal startup/send error
+  terminal_win = nil,        -- current Neovim terminal window id
+  terminal_buf = nil,        -- current Neovim terminal buffer id
+  terminal_job_id = nil,     -- current Neovim terminal job/channel id
+  terminal_shell_command = nil, -- shell command used for the current Neovim terminal
+  terminal_shell_source = nil,  -- source used to resolve the current Neovim terminal shell
+  terminal_shell_diagnostics = nil, -- shell candidate scan for current Neovim terminal startup
+  terminal_last_error = nil, -- last current Neovim terminal startup/send error
+  nvim_terminals = {},       -- managed Neovim terminal instances
+  current_terminal_id = nil, -- most recently active Neovim terminal id
+  next_terminal_id = 0,      -- monotonic id for Neovim terminals
+  activity_seq = 0,          -- monotonic sequence for latest-active selection
   nvim_pane_id = nil,        -- tmux pane id where nvim runs
   input_buf = nil,           -- buffer number for the command input
   is_open = false,           -- true when the dedicated TerminalMate input UI is active
@@ -313,8 +317,127 @@ local function reset_tmux_state()
   state.nvim_pane_id = nil
 end
 
-local function reset_nvim_terminal_state()
-  nvim_terminal.reset(state)
+local function sync_current_nvim_state(terminal)
+  state.terminal_win = terminal and terminal.win or nil
+  state.terminal_buf = terminal and terminal.buf or nil
+  state.terminal_job_id = terminal and terminal.job_id or nil
+  state.terminal_shell_command = terminal and terminal.shell_command or nil
+  state.terminal_shell_source = terminal and terminal.shell_source or nil
+  state.terminal_shell_diagnostics = terminal and terminal.shell_diagnostics or nil
+  state.terminal_last_error = terminal and terminal.last_error or nil
+end
+
+---@param terminal table
+local function mark_nvim_terminal_active(terminal)
+  state.activity_seq = state.activity_seq + 1
+  terminal.last_used_seq = state.activity_seq
+  state.current_terminal_id = terminal.id
+  state.backend = "nvim"
+  sync_current_nvim_state(terminal)
+end
+
+---@param left table|nil
+---@param right table|nil
+---@return boolean
+local function is_newer_terminal(left, right)
+  if not left then
+    return false
+  end
+  if not right then
+    return true
+  end
+
+  local left_seq = left.last_used_seq or left.created_seq or 0
+  local right_seq = right.last_used_seq or right.created_seq or 0
+  if left_seq ~= right_seq then
+    return left_seq > right_seq
+  end
+
+  return (left.id or 0) > (right.id or 0)
+end
+
+---@param terminal_id number|nil
+---@return table|nil
+local function find_nvim_terminal(terminal_id)
+  if not terminal_id then
+    return nil
+  end
+
+  for _, terminal in ipairs(state.nvim_terminals) do
+    if terminal.id == terminal_id then
+      return terminal
+    end
+  end
+
+  return nil
+end
+
+local function remove_nvim_terminal(terminal_id)
+  for index, terminal in ipairs(state.nvim_terminals) do
+    if terminal.id == terminal_id then
+      table.remove(state.nvim_terminals, index)
+      break
+    end
+  end
+end
+
+---@return table|nil
+local function get_visible_nvim_terminal()
+  local visible = nil
+
+  for _, terminal in ipairs(state.nvim_terminals) do
+    if terminal.win and not vim.api.nvim_win_is_valid(terminal.win) then
+      terminal.win = nil
+    end
+
+    if terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
+      visible = terminal
+    end
+  end
+
+  return visible
+end
+
+---@return table|nil
+local function get_latest_nvim_terminal()
+  local latest = nil
+
+  for _, terminal in ipairs(state.nvim_terminals) do
+    if is_newer_terminal(terminal, latest) then
+      latest = terminal
+    end
+  end
+
+  return latest
+end
+
+local function prune_nvim_terminals()
+  local alive = {}
+
+  for _, terminal in ipairs(state.nvim_terminals) do
+    if terminal.win and not vim.api.nvim_win_is_valid(terminal.win) then
+      terminal.win = nil
+    end
+
+    if nvim_terminal.is_alive(terminal) then
+      table.insert(alive, terminal)
+    else
+      nvim_terminal.reset(terminal)
+    end
+  end
+
+  state.nvim_terminals = alive
+
+  local current = find_nvim_terminal(state.current_terminal_id)
+  if not current then
+    current = get_latest_nvim_terminal()
+    state.current_terminal_id = current and current.id or nil
+  end
+
+  sync_current_nvim_state(current)
+  if not current and state.backend == "nvim" then
+    state.backend = nil
+  end
 end
 
 ---@return boolean
@@ -332,15 +455,26 @@ end
 
 ---@return boolean
 local function has_nvim_terminal()
-  if nvim_terminal.is_alive(state) then
-    return true
+  prune_nvim_terminals()
+  return #state.nvim_terminals > 0
+end
+
+---@return table|nil
+local function get_current_nvim_terminal()
+  prune_nvim_terminals()
+
+  local current = find_nvim_terminal(state.current_terminal_id)
+  if current then
+    return current
   end
 
-  reset_nvim_terminal_state()
-  if state.backend == "nvim" then
-    state.backend = nil
+  current = get_latest_nvim_terminal()
+  if current then
+    state.current_terminal_id = current.id
+    sync_current_nvim_state(current)
   end
-  return false
+
+  return current
 end
 
 ---@return string|nil
@@ -419,32 +553,102 @@ local function ensure_managed_tmux_pane()
   return pane_id
 end
 
+---@param terminal table
 ---@return boolean
-local function ensure_nvim_terminal()
-  if has_nvim_terminal() then
-    state.backend = "nvim"
-    return true
+local function show_nvim_terminal(terminal)
+  local visible = get_visible_nvim_terminal()
+  local reuse_win = visible and visible.win or nil
+  if visible and visible.id ~= terminal.id then
+    visible.win = nil
   end
 
-  local ok, err = nvim_terminal.open(state, {
+  local ok, err = nvim_terminal.show(terminal, {
     split_percent = config.options.split_percent,
-    shell = config.options.shell,
+    reuse_win = reuse_win,
   })
   if not ok then
-    notify(err or "Failed to open Neovim terminal.", vim.log.levels.ERROR)
+    notify(err or "Failed to show Neovim terminal.", vim.log.levels.ERROR)
+    prune_nvim_terminals()
     return false
   end
 
-  state.backend = "nvim"
+  mark_nvim_terminal_active(terminal)
   return true
 end
 
+---@return table|nil
+local function create_nvim_terminal()
+  prune_nvim_terminals()
+
+  local visible = get_visible_nvim_terminal()
+  local reuse_win = visible and visible.win or nil
+  if visible then
+    visible.win = nil
+  end
+
+  state.next_terminal_id = state.next_terminal_id + 1
+  local terminal = {
+    id = state.next_terminal_id,
+    created_seq = state.next_terminal_id,
+    last_used_seq = 0,
+  }
+
+  local ok, err = nvim_terminal.create(terminal, {
+    split_percent = config.options.split_percent,
+    shell = config.options.shell,
+    reuse_win = reuse_win,
+  })
+  if not ok then
+    notify(err or "Failed to create Neovim terminal.", vim.log.levels.ERROR)
+    return nil
+  end
+
+  table.insert(state.nvim_terminals, terminal)
+  mark_nvim_terminal_active(terminal)
+  return terminal
+end
+
+---@param opts table|nil
+---@return table|nil
+local function ensure_nvim_terminal(opts)
+  opts = opts or {}
+
+  local terminal = nil
+  if opts.new_terminal then
+    terminal = create_nvim_terminal()
+  else
+    terminal = get_current_nvim_terminal()
+    if not terminal then
+      terminal = create_nvim_terminal()
+    elseif opts.show then
+      if not show_nvim_terminal(terminal) then
+        return nil
+      end
+    end
+  end
+
+  if not terminal then
+    return nil
+  end
+
+  if opts.show and not terminal.win then
+    if not show_nvim_terminal(terminal) then
+      return nil
+    end
+  elseif not opts.show then
+    mark_nvim_terminal_active(terminal)
+  end
+
+  return terminal
+end
+
 ---@return string|nil
----@return string|nil
+---@return string|table|nil
 local function ensure_managed_terminal()
   local active_backend = get_active_backend()
   if active_backend == "nvim" then
-    return "nvim", "nvim"
+    local terminal = ensure_nvim_terminal({ show = true })
+    return terminal and "nvim" or nil, terminal
   end
   if active_backend == "tmux" then
     return "tmux", state.terminal_pane_id
@@ -452,8 +656,9 @@ local function ensure_managed_terminal()
 
   for _, backend in ipairs(preferred_backends()) do
     if backend == "nvim" and backend_is_available("nvim") then
-      if ensure_nvim_terminal() then
-        return "nvim", "nvim"
+      local terminal = ensure_nvim_terminal({ show = true })
+      if terminal then
+        return "nvim", terminal
       end
       if config.options.backend == "nvim" then
         return nil, nil
@@ -474,11 +679,12 @@ local function ensure_managed_terminal()
 end
 
 ---@return string|nil
----@return string|nil
+---@return string|table|nil
 local function ensure_send_target()
   local active_backend = get_active_backend()
   if active_backend == "nvim" then
-    return "nvim", "nvim"
+    local terminal = ensure_nvim_terminal({ show = false })
+    return terminal and "nvim" or nil, terminal
   end
   if active_backend == "tmux" then
     return "tmux", state.terminal_pane_id
@@ -486,8 +692,9 @@ local function ensure_send_target()
 
   for _, backend in ipairs(preferred_backends()) do
     if backend == "nvim" and backend_is_available("nvim") then
-      if ensure_nvim_terminal() then
-        return "nvim", "nvim"
+      local terminal = ensure_nvim_terminal({ show = false })
+      if terminal then
+        return "nvim", terminal
       end
       if config.options.backend == "nvim" then
         return nil, nil
@@ -543,7 +750,7 @@ local function build_command_blocks(text)
 end
 
 ---@param backend string
----@param target string
+---@param target string|table|nil
 ---@param text string
 local function send_to_target(backend, target, text)
   if text == "" then
@@ -567,25 +774,58 @@ local function send_to_target(backend, target, text)
     return
   end
 
+  local terminal = target
+  if not terminal or not nvim_terminal.is_alive(terminal) then
+    if terminal and terminal.id then
+      remove_nvim_terminal(terminal.id)
+    end
+    prune_nvim_terminals()
+    terminal = get_current_nvim_terminal() or ensure_nvim_terminal({ show = false })
+  end
+
   for _, block in ipairs(blocks) do
-    local ok, err = nvim_terminal.send_text(state, block, true)
+    if not terminal then
+      return
+    end
+
+    mark_nvim_terminal_active(terminal)
+
+    local ok, err = nvim_terminal.send_text(terminal, block, true)
     if not ok then
       notify(err or "Failed to send to Neovim terminal.", vim.log.levels.WARN)
-      reset_nvim_terminal_state()
-      if state.backend == "nvim" then
-        state.backend = nil
+      local failed_id = terminal.id
+      nvim_terminal.close(terminal)
+      remove_nvim_terminal(failed_id)
+      prune_nvim_terminals()
+
+      local delivered = false
+      terminal = get_current_nvim_terminal()
+      if not terminal then
+        terminal = ensure_nvim_terminal({ show = false })
       end
 
-      if tmux.is_tmux() then
+      if terminal then
+        mark_nvim_terminal_active(terminal)
+        local retry_ok, retry_err = nvim_terminal.send_text(terminal, block, true)
+        if retry_ok then
+          delivered = true
+        else
+          notify(retry_err or "Failed to send to replacement Neovim terminal.", vim.log.levels.WARN)
+        end
+      end
+
+      if not delivered and tmux.is_tmux() and config.options.backend ~= "nvim" then
         local fallback_target = ensure_managed_tmux_pane()
         if fallback_target then
           tmux.send_text(fallback_target, block, true)
           state.backend = "tmux"
-          return
+          delivered = true
         end
       end
 
-      return
+      if not delivered then
+        return
+      end
     end
   end
 end
@@ -597,17 +837,13 @@ local function send_to_terminal(text)
   end
 
   local active_backend = get_active_backend()
-  if not state.is_open and not active_backend then
-    notify("Terminal pane is not open. Run :TerminalMateOpen first.", vim.log.levels.WARN)
-    return
-  end
 
   local backend = active_backend
   local target = nil
   if backend == "tmux" then
     target = state.terminal_pane_id
   elseif backend == "nvim" then
-    target = "nvim"
+    target = get_current_nvim_terminal()
   else
     backend, target = ensure_managed_terminal()
   end
@@ -655,29 +891,29 @@ end
 
 --- Open the terminal pane
 function M.open()
-  local active_backend = get_active_backend()
-  if state.is_open and active_backend then
-    notify("Terminal pane is already open.")
-    return
-  end
-
   ensure_history_loaded()
 
+  local active_backend = get_active_backend()
   local backend = active_backend
   local target = nil
-  if not backend then
+  if backend == "nvim" then
+    target = ensure_nvim_terminal({ show = true })
+    if not target then
+      return
+    end
+  elseif not backend then
     backend, target = ensure_managed_terminal()
     if not backend then
       return
     end
   elseif backend == "tmux" then
     target = state.terminal_pane_id
-  else
-    target = "nvim"
   end
 
-  state.is_open = true
-  apply_minimal_ui()
+  if not state.is_open then
+    state.is_open = true
+    apply_minimal_ui()
+  end
 
   local buf = get_or_create_input_buf()
   vim.api.nvim_set_current_buf(buf)
@@ -690,8 +926,76 @@ function M.open()
   if backend == "tmux" then
     notify("Terminal pane opened (" .. target .. ", tmux backend)")
   else
-    notify("Terminal pane opened (Neovim backend)")
+    notify("Terminal pane opened (Neovim backend #" .. target.id .. ")")
   end
+end
+
+--- Create and show a new terminal instance
+function M.new_terminal()
+  ensure_history_loaded()
+
+  local backend = config.options.backend == "tmux" and "tmux" or nil
+  local target = nil
+
+  if backend == "tmux" then
+    target = ensure_managed_tmux_pane()
+    if not target then
+      return
+    end
+  else
+    target = ensure_nvim_terminal({ new_terminal = true, show = true })
+    if not target then
+      if config.options.backend == "nvim" then
+        return
+      end
+      local tmux_target = ensure_managed_tmux_pane()
+      if not tmux_target then
+        return
+      end
+      backend = "tmux"
+      target = tmux_target
+    else
+      backend = "nvim"
+    end
+  end
+
+  if not state.is_open then
+    state.is_open = true
+    apply_minimal_ui()
+  end
+
+  local buf = get_or_create_input_buf()
+  vim.api.nvim_set_current_buf(buf)
+  M._setup_buffer_keymaps(buf)
+
+  vim.wo.signcolumn = "no"
+  vim.wo.number = false
+  vim.wo.relativenumber = false
+
+  if backend == "tmux" then
+    notify("Terminal pane opened (" .. target .. ", tmux backend)")
+  else
+    notify("New terminal created (Neovim backend #" .. target.id .. ")")
+  end
+end
+
+--- Hide the current terminal pane without killing it
+function M.hide()
+  local active_backend = get_active_backend()
+  if active_backend == "tmux" then
+    notify("Hide is only supported for managed Neovim terminals.", vim.log.levels.WARN)
+    return
+  end
+
+  local terminal = get_current_nvim_terminal()
+  if not terminal or not terminal.win or not vim.api.nvim_win_is_valid(terminal.win) then
+    notify("No terminal pane to hide.", vim.log.levels.WARN)
+    return
+  end
+
+  nvim_terminal.hide(terminal)
+  sync_current_nvim_state(terminal)
+  notify("Terminal pane hidden.")
 end
 
 --- Close the terminal pane
@@ -710,7 +1014,12 @@ function M.close()
     tmux.kill_pane(state.terminal_pane_id)
     reset_tmux_state()
   else
-    nvim_terminal.close(state)
+    local terminal = get_current_nvim_terminal()
+    if terminal then
+      nvim_terminal.close(terminal)
+      remove_nvim_terminal(terminal.id)
+      prune_nvim_terminals()
+    end
   end
 
   state.backend = nil
@@ -722,7 +1031,18 @@ end
 
 --- Toggle the terminal pane
 function M.toggle()
-  if state.is_open and get_active_backend() then
+  local active_backend = get_active_backend()
+  if active_backend == "nvim" then
+    local terminal = get_current_nvim_terminal()
+    if terminal and terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
+      M.hide()
+      return
+    end
+    M.open()
+    return
+  end
+
+  if state.is_open and active_backend then
     M.close()
   else
     state.is_open = false
@@ -776,7 +1096,12 @@ function M.clear()
   if active_backend == "tmux" then
     tmux.send_special_key(state.terminal_pane_id, "C-l")
   elseif active_backend == "nvim" then
-    local ok, err = nvim_terminal.send_special_key(state, "C-l")
+    local terminal = get_current_nvim_terminal()
+    if not terminal then
+      return
+    end
+    mark_nvim_terminal_active(terminal)
+    local ok, err = nvim_terminal.send_special_key(terminal, "C-l")
     if not ok then
       notify(err or "Failed to clear Neovim terminal.", vim.log.levels.WARN)
     end
@@ -789,7 +1114,12 @@ function M.interrupt()
   if active_backend == "tmux" then
     tmux.send_special_key(state.terminal_pane_id, "C-c")
   elseif active_backend == "nvim" then
-    local ok, err = nvim_terminal.send_special_key(state, "C-c")
+    local terminal = get_current_nvim_terminal()
+    if not terminal then
+      return
+    end
+    mark_nvim_terminal_active(terminal)
+    local ok, err = nvim_terminal.send_special_key(terminal, "C-c")
     if not ok then
       notify(err or "Failed to interrupt Neovim terminal.", vim.log.levels.WARN)
     end
@@ -1064,12 +1394,15 @@ end
 --- Get current state (for statusline integration etc.)
 ---@return table
 function M.get_state()
+  local current_terminal = get_current_nvim_terminal()
   return {
     is_open = state.is_open,
     backend = get_active_backend(),
     terminal_pane_id = state.terminal_pane_id,
     terminal_buf = state.terminal_buf,
     terminal_win = state.terminal_win,
+    current_terminal_id = current_terminal and current_terminal.id or nil,
+    nvim_terminal_count = #state.nvim_terminals,
     nvim_pane_id = state.nvim_pane_id,
     history_count = #state.history,
   }
@@ -1098,6 +1431,14 @@ function M._setup_buffer_keymaps(buf)
     M.send_buffer()
     vim.cmd("startinsert")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
+
+  vim.keymap.set("n", keymap.new_terminal, function()
+    M.new_terminal()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Create a new terminal instance" }))
+
+  vim.keymap.set("n", keymap.hide, function()
+    M.hide()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Hide current terminal pane" }))
 
   vim.keymap.set("n", keymap.history_prev, function()
     M.history_prev()
@@ -1179,6 +1520,14 @@ function M.setup(opts)
   vim.keymap.set("n", keymap.open, function()
     M.open()
   end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Open terminal pane" }))
+
+  vim.keymap.set("n", keymap.new_terminal, function()
+    M.new_terminal()
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Create a new terminal instance" }))
+
+  vim.keymap.set("n", keymap.hide, function()
+    M.hide()
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Hide current terminal pane" }))
 
   vim.keymap.set("n", keymap.close, function()
     M.close()

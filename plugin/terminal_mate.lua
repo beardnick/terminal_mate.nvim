@@ -11,6 +11,14 @@ vim.api.nvim_create_user_command("TerminalMateOpen", function()
   require("terminal_mate").open()
 end, { desc = "Open terminal_mate split pane" })
 
+vim.api.nvim_create_user_command("TerminalMateNew", function()
+  require("terminal_mate").new_terminal()
+end, { desc = "Create a new terminal_mate terminal instance" })
+
+vim.api.nvim_create_user_command("TerminalMateHide", function()
+  require("terminal_mate").hide()
+end, { desc = "Hide the current terminal_mate pane without killing it" })
+
 vim.api.nvim_create_user_command("TerminalMateClose", function()
   require("terminal_mate").close()
 end, { desc = "Close terminal_mate split pane" })
