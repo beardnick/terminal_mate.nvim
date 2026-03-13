@@ -8,8 +8,12 @@ vim.g.loaded_terminal_mate = true
 
 -- User commands
 vim.api.nvim_create_user_command("TerminalMateOpen", function()
-  require("terminal_mate").open()
+  require("terminal_mate").open_pane()
 end, { desc = "Open terminal_mate split pane" })
+
+vim.api.nvim_create_user_command("TerminalMateMode", function()
+  require("terminal_mate").open()
+end, { desc = "Open terminal_mate input mode" })
 
 vim.api.nvim_create_user_command("TerminalMateNew", function()
   require("terminal_mate").new_terminal()

@@ -889,25 +889,51 @@ local function ensure_history_loaded()
   end
 end
 
---- Open the terminal pane
-function M.open()
-  ensure_history_loaded()
-
+local function ensure_terminal_visible()
   local active_backend = get_active_backend()
   local backend = active_backend
   local target = nil
+
   if backend == "nvim" then
     target = ensure_nvim_terminal({ show = true })
     if not target then
-      return
+      return nil, nil
     end
   elseif not backend then
     backend, target = ensure_managed_terminal()
     if not backend then
-      return
+      return nil, nil
     end
   elseif backend == "tmux" then
     target = state.terminal_pane_id
+  end
+
+  return backend, target
+end
+
+--- Open terminal pane only (do not enter terminal_mate input mode)
+function M.open_pane()
+  ensure_history_loaded()
+
+  local backend, target = ensure_terminal_visible()
+  if not backend then
+    return
+  end
+
+  if backend == "tmux" then
+    notify("Terminal pane opened (" .. target .. ", tmux backend)")
+  else
+    notify("Terminal pane opened (Neovim backend #" .. target.id .. ")")
+  end
+end
+
+--- Open terminal_mate input mode
+function M.open()
+  ensure_history_loaded()
+
+  local backend, target = ensure_terminal_visible()
+  if not backend then
+    return
   end
 
   if not state.is_open then
@@ -924,9 +950,9 @@ function M.open()
   vim.wo.relativenumber = false
 
   if backend == "tmux" then
-    notify("Terminal pane opened (" .. target .. ", tmux backend)")
+    notify("TerminalMate mode opened (" .. target .. ", tmux backend)")
   else
-    notify("Terminal pane opened (Neovim backend #" .. target.id .. ")")
+    notify("TerminalMate mode opened (Neovim backend #" .. target.id .. ")")
   end
 end
 
@@ -1029,7 +1055,7 @@ function M.close()
   notify("Terminal pane closed.")
 end
 
---- Toggle the terminal pane
+--- Toggle terminal pane visibility (without entering terminal_mate input mode)
 function M.toggle()
   local active_backend = get_active_backend()
   if active_backend == "nvim" then
@@ -1038,7 +1064,8 @@ function M.toggle()
       M.hide()
       return
     end
-    M.open()
+    state.is_open = false
+    M.open_pane()
     return
   end
 
@@ -1046,7 +1073,7 @@ function M.toggle()
     M.close()
   else
     state.is_open = false
-    M.open()
+    M.open_pane()
   end
 end
 
@@ -1518,8 +1545,12 @@ function M.setup(opts)
   local gopts = { noremap = true, silent = true }
 
   vim.keymap.set("n", keymap.open, function()
-    M.open()
+    M.open_pane()
   end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Open terminal pane" }))
+
+  vim.keymap.set("n", keymap.mate_mode or "<leader>tm", function()
+    M.open()
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Open terminal_mate input mode" }))
 
   vim.keymap.set("n", keymap.new_terminal, function()
     M.new_terminal()

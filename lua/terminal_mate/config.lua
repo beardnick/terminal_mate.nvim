@@ -12,6 +12,7 @@
 ---@field send_line string Send all buffer content in normal/insert mode
 ---@field send_visual string Send visual selection
 ---@field open string Open terminal pane
+---@field mate_mode string Open terminal_mate input mode
 ---@field new_terminal string Create a new terminal instance
 ---@field hide string Hide the current terminal pane without killing it
 ---@field close string Close terminal pane
@@ -39,6 +40,7 @@ M.defaults = {
     send_line = "<C-s>",
     send_visual = "<leader>ts",
     open = "<leader>to",
+    mate_mode = "<leader>tm",
     new_terminal = "<leader>tn",
     hide = "<leader>th",
     close = "<leader>tc",

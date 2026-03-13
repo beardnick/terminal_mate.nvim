@@ -36,8 +36,8 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 ## Usage
 
-1. Run `:TerminalMateOpen` or press `<leader>to`.
-2. TerminalMate opens a dedicated input buffer and starts or reuses the configured backend.
+1. Run `:TerminalMateOpen` or press `<leader>to` to open the terminal pane only.
+2. Run `:TerminalMateMode` or press `<leader>tm` to enter the dedicated TerminalMate input buffer.
 3. With the default `auto` backend, the latest managed Neovim terminal opens below the editor. If none exists, TerminalMate creates one.
 4. Type your command(s) in the input buffer.
 5. Press `Ctrl+S` to send the buffer to the latest active terminal.
@@ -68,6 +68,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 | Command | Description |
 |---------|-------------|
 | `:TerminalMateOpen` | Open the terminal pane |
+| `:TerminalMateMode` | Enter terminal_mate input mode |
 | `:TerminalMateNew` | Create a new terminal instance |
 | `:TerminalMateHide` | Hide the current managed Neovim terminal without killing it |
 | `:TerminalMateClose` | Close the terminal pane |
@@ -102,10 +103,11 @@ Global keymaps:
 |--------|------|-------------|
 | `<leader>ts` | Visual | Send selected text to terminal from any buffer |
 | `<leader>to` | Normal | Open the terminal pane |
+| `<leader>tm` | Normal | Enter terminal_mate input mode |
 | `<leader>tn` | Normal | Create a new terminal instance |
 | `<leader>th` | Normal | Hide the current terminal pane |
 | `<leader>tc` | Normal | Close the terminal pane |
-| `<leader>tt` | Normal | Toggle the terminal pane |
+| `<leader>tt` | Normal | Toggle terminal pane visibility (without entering input mode) |
 
 ## Configuration
 
@@ -126,6 +128,7 @@ require("terminal_mate").setup({
     send_line = "<C-s>",
     send_visual = "<leader>ts",
     open = "<leader>to",
+    mate_mode = "<leader>tm",
     new_terminal = "<leader>tn",
     hide = "<leader>th",
     close = "<leader>tc",
