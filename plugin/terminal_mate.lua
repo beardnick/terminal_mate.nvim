@@ -19,6 +19,18 @@ vim.api.nvim_create_user_command("TerminalMateNew", function()
   require("terminal_mate").new_terminal()
 end, { desc = "Create a new terminal_mate terminal instance" })
 
+vim.api.nvim_create_user_command("TerminalMateSwitch", function(opts)
+  require("terminal_mate").switch_terminal(opts.args)
+end, { nargs = 1, desc = "Switch to a specific managed terminal_mate terminal instance" })
+
+vim.api.nvim_create_user_command("TerminalMateNextTerminal", function()
+  require("terminal_mate").next_terminal()
+end, { desc = "Switch to the next managed terminal_mate terminal instance" })
+
+vim.api.nvim_create_user_command("TerminalMatePrevTerminal", function()
+  require("terminal_mate").prev_terminal()
+end, { desc = "Switch to the previous managed terminal_mate terminal instance" })
+
 vim.api.nvim_create_user_command("TerminalMateHide", function()
   require("terminal_mate").hide()
 end, { desc = "Hide the current terminal_mate pane without killing it" })

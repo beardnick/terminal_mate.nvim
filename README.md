@@ -9,7 +9,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Neovim-first backend**: `backend = "auto"` prefers Neovim's built-in terminal and falls back to tmux when needed.
 - **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and keep that placement when you hide, reopen, or switch instances.
 - **Multiple terminal instances**: Create multiple managed Neovim terminals and keep sending to the most recently active one.
-- **Readable terminal list sidebar**: Managed Neovim terminals get a titled right-side list with clearer spacing, `[A]` active markers, and click/`Enter` switching.
+- **Slim terminal list sidebar**: Managed Neovim terminals get a compact right-side list with shell labels, active-row emphasis, and click/`Enter` switching.
 - **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then clear the input buffer automatically.
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
@@ -40,8 +40,8 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 1. Run `:TerminalMateOpen` or press `<leader>to` to open the terminal pane only.
 2. Run `:TerminalMateMode` or press `<leader>tm` to enter the dedicated TerminalMate input buffer.
 3. With the default `auto` backend, the latest managed Neovim terminal opens below the editor. If none exists, TerminalMate creates one.
-4. When the Neovim backend is visible, a titled terminal list appears on the right side of the terminal split.
-5. The active row is emphasized with a stronger highlight and an `[A]` marker.
+4. When the Neovim backend is visible, a compact terminal list appears on the right side of the terminal split.
+5. The active row is emphasized with a stronger highlight and a slim left marker.
 6. Click a terminal row or press `Enter` on it to switch to that managed terminal.
 7. Type your command(s) in the input buffer.
 8. Press `Ctrl+S` to send the buffer to the latest active terminal.
@@ -50,9 +50,11 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ### Managing Multiple Terminals
 
 - Run `:TerminalMateNew` or press `<leader>tn` to create a new managed Neovim terminal instance.
+- Run `:TerminalMateNextTerminal` / `:TerminalMatePrevTerminal` to cycle between managed Neovim terminal instances.
+- Run `:TerminalMateSwitch {id}` to jump directly to a managed Neovim terminal by id.
 - Run `:TerminalMateHide` or press `<leader>th` to hide the current managed Neovim terminal without killing it.
 - `:TerminalMateOpen` shows the latest active terminal again.
-- The active terminal row is highlighted in the right-side list, under the `Terminal List` header, whenever the Neovim backend is visible.
+- The active terminal row is highlighted in the right-side list whenever the Neovim backend is visible.
 - Send operations prefer the latest active terminal, fall back to the next live terminal if needed, and create a new one when no managed terminal remains.
 
 ### Sending a Visual Selection From Any Buffer
@@ -75,6 +77,9 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 | `:TerminalMateOpen` | Open the terminal pane |
 | `:TerminalMateMode` | Enter terminal_mate input mode |
 | `:TerminalMateNew` | Create a new terminal instance |
+| `:TerminalMateSwitch {id}` | Switch to a specific managed terminal instance |
+| `:TerminalMateNextTerminal` | Switch to the next managed terminal instance |
+| `:TerminalMatePrevTerminal` | Switch to the previous managed terminal instance |
 | `:TerminalMateHide` | Hide the current managed Neovim terminal without killing it |
 | `:TerminalMateClose` | Close the terminal pane |
 | `:TerminalMateToggle` | Toggle the current terminal pane visibility |
