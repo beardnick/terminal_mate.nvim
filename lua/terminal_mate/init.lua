@@ -6,6 +6,12 @@ local tmux = require("terminal_mate.tmux")
 
 local M = {}
 
+local SIDEBAR_BUFNAME = "[TerminalMateList]"
+local SIDEBAR_FILETYPE = "terminal_mate_sidebar"
+local SIDEBAR_MIN_WIDTH = 6
+local SIDEBAR_MAX_WIDTH = 10
+local SIDEBAR_NS = vim.api.nvim_create_namespace("TerminalMateSidebar")
+
 --- State
 local state = {
   backend = nil,             -- active backend: "nvim" or "tmux"
@@ -19,6 +25,9 @@ local state = {
   terminal_last_error = nil, -- last current Neovim terminal startup/send error
   nvim_terminals = {},       -- managed Neovim terminal instances
   current_terminal_id = nil, -- most recently active Neovim terminal id
+  sidebar_buf = nil,         -- terminal list sidebar buffer
+  sidebar_win = nil,         -- terminal list sidebar window
+  sidebar_terminal_ids = {}, -- terminal ids mapped by sidebar line
   next_terminal_id = 0,      -- monotonic id for Neovim terminals
   activity_seq = 0,          -- monotonic sequence for latest-active selection
   nvim_pane_id = nil,        -- tmux pane id where nvim runs
@@ -78,6 +87,156 @@ end
 ---@param level number|nil
 local function notify(msg, level)
   vim.notify("[TerminalMate] " .. msg, level or vim.log.levels.INFO)
+end
+
+---@param value number
+---@param minimum number
+---@param maximum number
+---@return number
+local function clamp(value, minimum, maximum)
+  return math.max(minimum, math.min(maximum, value))
+end
+
+---@param win number|nil
+---@return boolean
+local function is_normal_window(win)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return false
+  end
+
+  local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
+  return ok and cfg.relative == ""
+end
+
+local switch_nvim_terminal
+local sync_nvim_sidebar
+local show_nvim_terminal
+
+local function setup_sidebar_highlights()
+  vim.api.nvim_set_hl(0, "TerminalMateSidebarActive", { default = true, link = "Visual" })
+  vim.api.nvim_set_hl(0, "TerminalMateSidebarInactive", { default = true, link = "Comment" })
+end
+
+local function close_nvim_sidebar()
+  if state.sidebar_win and vim.api.nvim_win_is_valid(state.sidebar_win) then
+    pcall(vim.api.nvim_win_close, state.sidebar_win, true)
+  end
+
+  state.sidebar_win = nil
+  state.sidebar_terminal_ids = {}
+end
+
+local function get_or_create_sidebar_buf()
+  if state.sidebar_buf and vim.api.nvim_buf_is_valid(state.sidebar_buf) then
+    return state.sidebar_buf
+  end
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  pcall(vim.api.nvim_buf_set_name, buf, SIDEBAR_BUFNAME)
+
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].modifiable = false
+  vim.bo[buf].filetype = SIDEBAR_FILETYPE
+
+  local opts = { buffer = buf, noremap = true, silent = true, nowait = true }
+  vim.keymap.set("n", "<CR>", function()
+    M._sidebar_select_current()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Switch terminal" }))
+  vim.keymap.set("n", "<LeftMouse>", function()
+    M._sidebar_select_mouse()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Switch terminal" }))
+  vim.keymap.set("n", "<2-LeftMouse>", function()
+    M._sidebar_select_mouse()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Switch terminal" }))
+
+  state.sidebar_buf = buf
+  return buf
+end
+
+---@param win number
+---@param width number
+local function configure_sidebar_window(win, width)
+  if not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  vim.api.nvim_win_set_width(win, width)
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].wrap = false
+  vim.wo[win].winfixwidth = true
+  vim.wo[win].cursorline = false
+end
+
+---@param terminal_win number
+---@param width number
+---@return number|nil
+local function ensure_sidebar_window(terminal_win, width)
+  local sidebar_buf = get_or_create_sidebar_buf()
+
+  if state.sidebar_win and not is_normal_window(state.sidebar_win) then
+    state.sidebar_win = nil
+  end
+
+  if state.sidebar_win and vim.api.nvim_win_is_valid(state.sidebar_win) then
+    vim.api.nvim_win_set_buf(state.sidebar_win, sidebar_buf)
+    configure_sidebar_window(state.sidebar_win, width)
+    return state.sidebar_win
+  end
+
+  if not is_normal_window(terminal_win) then
+    return nil
+  end
+
+  local previous_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_set_current_win(terminal_win)
+
+  local ok = pcall(vim.cmd, "botright vertical " .. width .. "split")
+  if not ok then
+    if vim.api.nvim_win_is_valid(previous_win) then
+      vim.api.nvim_set_current_win(previous_win)
+    end
+    return nil
+  end
+
+  state.sidebar_win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(state.sidebar_win, sidebar_buf)
+  configure_sidebar_window(state.sidebar_win, width)
+
+  if vim.api.nvim_win_is_valid(previous_win) and previous_win ~= state.sidebar_win then
+    vim.api.nvim_set_current_win(previous_win)
+  end
+
+  return state.sidebar_win
+end
+
+function M._sidebar_select_current()
+  if vim.api.nvim_get_current_buf() ~= state.sidebar_buf then
+    return
+  end
+
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  local terminal_id = state.sidebar_terminal_ids[line]
+  if terminal_id and switch_nvim_terminal then
+    switch_nvim_terminal(terminal_id)
+  end
+end
+
+function M._sidebar_select_mouse()
+  local mouse = vim.fn.getmousepos()
+  local winid = mouse.winid
+  if not winid or winid == 0 or winid ~= state.sidebar_win or not vim.api.nvim_win_is_valid(winid) then
+    return
+  end
+
+  local line_count = vim.api.nvim_buf_line_count(vim.api.nvim_win_get_buf(winid))
+  local line = clamp(mouse.line or mouse.winrow or 1, 1, math.max(line_count, 1))
+  vim.api.nvim_set_current_win(winid)
+  vim.api.nvim_win_set_cursor(winid, { line, 0 })
+  M._sidebar_select_current()
 end
 
 --- Unmetafy a binary string from zsh's metafied format.
@@ -334,6 +493,10 @@ local function mark_nvim_terminal_active(terminal)
   state.current_terminal_id = terminal.id
   state.backend = "nvim"
   sync_current_nvim_state(terminal)
+
+  if sync_nvim_sidebar then
+    sync_nvim_sidebar()
+  end
 end
 
 ---@param left table|nil
@@ -477,6 +640,108 @@ local function get_current_nvim_terminal()
   return current
 end
 
+local function build_sidebar_entries()
+  local terminals = vim.deepcopy(state.nvim_terminals)
+  table.sort(terminals, function(left, right)
+    return (left.id or 0) < (right.id or 0)
+  end)
+
+  local lines = {}
+  local terminal_ids = {}
+  local active_line = 1
+  local longest = 0
+
+  for index, terminal in ipairs(terminals) do
+    local line = string.format("%s#%d", terminal.id == state.current_terminal_id and ">" or " ", terminal.id)
+    longest = math.max(longest, #line)
+    table.insert(lines, line)
+    table.insert(terminal_ids, terminal.id)
+
+    if terminal.id == state.current_terminal_id then
+      active_line = index
+    end
+  end
+
+  local width = clamp(longest + 1, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+  return lines, terminal_ids, width, active_line
+end
+
+local function render_sidebar(lines, terminal_ids, active_line)
+  local sidebar_buf = get_or_create_sidebar_buf()
+  local sidebar_win = state.sidebar_win
+  if not sidebar_win or not vim.api.nvim_win_is_valid(sidebar_win) then
+    return
+  end
+
+  vim.bo[sidebar_buf].modifiable = true
+  vim.api.nvim_buf_set_lines(sidebar_buf, 0, -1, false, lines)
+  vim.api.nvim_buf_clear_namespace(sidebar_buf, SIDEBAR_NS, 0, -1)
+
+  for index, _ in ipairs(lines) do
+    local hl_group = index == active_line and "TerminalMateSidebarActive" or "TerminalMateSidebarInactive"
+    vim.api.nvim_buf_add_highlight(sidebar_buf, SIDEBAR_NS, hl_group, index - 1, 0, -1)
+  end
+
+  vim.bo[sidebar_buf].modifiable = false
+  state.sidebar_terminal_ids = terminal_ids
+
+  local current_win = vim.api.nvim_get_current_win()
+  if current_win ~= sidebar_win then
+    pcall(vim.api.nvim_win_set_cursor, sidebar_win, { active_line, 0 })
+    return
+  end
+
+  local line = vim.api.nvim_win_get_cursor(sidebar_win)[1]
+  if line < 1 or line > #lines then
+    pcall(vim.api.nvim_win_set_cursor, sidebar_win, { active_line, 0 })
+  end
+end
+
+sync_nvim_sidebar = function()
+  prune_nvim_terminals()
+
+  local visible_terminal = get_visible_nvim_terminal()
+  if not visible_terminal or not visible_terminal.win then
+    close_nvim_sidebar()
+    return
+  end
+
+  local lines, terminal_ids, width, active_line = build_sidebar_entries()
+  if #terminal_ids == 0 then
+    close_nvim_sidebar()
+    return
+  end
+
+  setup_sidebar_highlights()
+
+  local sidebar_win = ensure_sidebar_window(visible_terminal.win, width)
+  if not sidebar_win then
+    return
+  end
+
+  render_sidebar(lines, terminal_ids, active_line)
+end
+
+switch_nvim_terminal = function(terminal_id)
+  prune_nvim_terminals()
+
+  local terminal = find_nvim_terminal(terminal_id)
+  if not terminal then
+    sync_nvim_sidebar()
+    notify("Managed terminal #" .. tostring(terminal_id) .. " is no longer available.", vim.log.levels.WARN)
+    return
+  end
+
+  if terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
+    mark_nvim_terminal_active(terminal)
+    return
+  end
+
+  if not show_nvim_terminal(terminal) then
+    sync_nvim_sidebar()
+  end
+end
+
 ---@return string|nil
 local function get_active_backend()
   if state.backend == "nvim" and has_nvim_terminal() then
@@ -555,7 +820,7 @@ end
 
 ---@param terminal table
 ---@return boolean
-local function show_nvim_terminal(terminal)
+show_nvim_terminal = function(terminal)
   local visible = get_visible_nvim_terminal()
   local reuse_win = visible and visible.win or nil
   if visible and visible.id ~= terminal.id then
@@ -908,6 +1173,10 @@ local function ensure_terminal_visible()
     target = state.terminal_pane_id
   end
 
+  if backend ~= "nvim" then
+    close_nvim_sidebar()
+  end
+
   return backend, target
 end
 
@@ -985,6 +1254,10 @@ function M.new_terminal()
     end
   end
 
+  if backend ~= "nvim" then
+    close_nvim_sidebar()
+  end
+
   if not state.is_open then
     state.is_open = true
     apply_minimal_ui()
@@ -1021,6 +1294,7 @@ function M.hide()
 
   nvim_terminal.hide(terminal)
   sync_current_nvim_state(terminal)
+  close_nvim_sidebar()
   notify("Terminal pane hidden.")
 end
 
@@ -1032,6 +1306,7 @@ function M.close()
       state.is_open = false
       restore_ui()
     end
+    close_nvim_sidebar()
     notify("No terminal pane to close.", vim.log.levels.WARN)
     return
   end
@@ -1050,6 +1325,7 @@ function M.close()
 
   state.backend = nil
   state.is_open = false
+  close_nvim_sidebar()
   restore_ui()
 
   notify("Terminal pane closed.")
@@ -1509,6 +1785,38 @@ end
 local function setup_autocmds()
   local group = vim.api.nvim_create_augroup("TerminalMate", { clear = true })
 
+  vim.api.nvim_create_autocmd({ "BufEnter", "TermEnter" }, {
+    group = group,
+    callback = function(args)
+      for _, terminal in ipairs(state.nvim_terminals) do
+        if terminal.buf == args.buf then
+          mark_nvim_terminal_active(terminal)
+          break
+        end
+      end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = group,
+    callback = function(args)
+      local closed_win = tonumber(args.match)
+      if closed_win and state.sidebar_win == closed_win then
+        state.sidebar_win = nil
+        state.sidebar_terminal_ids = {}
+        return
+      end
+
+      if state.sidebar_win or #state.nvim_terminals > 0 then
+        vim.schedule(function()
+          if sync_nvim_sidebar then
+            sync_nvim_sidebar()
+          end
+        end)
+      end
+    end,
+  })
+
   if config.options.close_on_exit then
     vim.api.nvim_create_autocmd("VimLeavePre", {
       group = group,
@@ -1527,6 +1835,7 @@ end
 ---@param opts table|nil
 function M.setup(opts)
   config.setup(opts)
+  setup_sidebar_highlights()
   setup_autocmds()
 
   if config.options.backend == "tmux" and not tmux.is_tmux() then
