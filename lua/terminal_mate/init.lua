@@ -8,8 +8,9 @@ local M = {}
 
 local SIDEBAR_BUFNAME = "[TerminalMateList]"
 local SIDEBAR_FILETYPE = "terminal_mate_sidebar"
-local SIDEBAR_MIN_WIDTH = 6
-local SIDEBAR_MAX_WIDTH = 10
+local SIDEBAR_TITLE = "Terminal List"
+local SIDEBAR_MIN_WIDTH = 18
+local SIDEBAR_MAX_WIDTH = 24
 local SIDEBAR_NS = vim.api.nvim_create_namespace("TerminalMateSidebar")
 
 --- State
@@ -112,9 +113,24 @@ local switch_nvim_terminal
 local sync_nvim_sidebar
 local show_nvim_terminal
 
+---@param text string
+---@param width number
+---@return string
+local function center_text(text, width)
+  if #text >= width then
+    return text
+  end
+
+  local left_pad = math.floor((width - #text) / 2)
+  local right_pad = width - #text - left_pad
+  return string.rep(" ", left_pad) .. text .. string.rep(" ", right_pad)
+end
+
 local function setup_sidebar_highlights()
-  vim.api.nvim_set_hl(0, "TerminalMateSidebarActive", { default = true, link = "Visual" })
-  vim.api.nvim_set_hl(0, "TerminalMateSidebarInactive", { default = true, link = "Comment" })
+  vim.api.nvim_set_hl(0, "TerminalMateSidebarHeader", { default = true, link = "Title" })
+  vim.api.nvim_set_hl(0, "TerminalMateSidebarDivider", { default = true, link = "WinSeparator" })
+  vim.api.nvim_set_hl(0, "TerminalMateSidebarActive", { default = true, bold = true, reverse = true })
+  vim.api.nvim_set_hl(0, "TerminalMateSidebarInactive", { default = true, link = "Normal" })
 end
 
 local function close_nvim_sidebar()
@@ -646,27 +662,49 @@ local function build_sidebar_entries()
     return (left.id or 0) < (right.id or 0)
   end)
 
-  local lines = {}
-  local terminal_ids = {}
-  local active_line = 1
-  local longest = 0
+  local rows = {}
+  local active_row = 1
+  local longest = #SIDEBAR_TITLE
 
   for index, terminal in ipairs(terminals) do
-    local line = string.format("%s#%d", terminal.id == state.current_terminal_id and ">" or " ", terminal.id)
+    local is_active = terminal.id == state.current_terminal_id
+    local marker = is_active and "[A]" or "[ ]"
+    local line = string.format("%s Terminal #%d", marker, terminal.id)
     longest = math.max(longest, #line)
-    table.insert(lines, line)
-    table.insert(terminal_ids, terminal.id)
+    table.insert(rows, {
+      line = line,
+      terminal_id = terminal.id,
+      active = is_active,
+    })
 
     if terminal.id == state.current_terminal_id then
-      active_line = index
+      active_row = index
     end
   end
 
-  local width = clamp(longest + 1, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
-  return lines, terminal_ids, width, active_line
+  local width = clamp(longest + 2, SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH)
+  local lines = {
+    center_text(SIDEBAR_TITLE, width),
+    string.rep("-", width),
+  }
+  local terminal_ids = { false, false }
+  local line_highlights = {
+    [1] = "TerminalMateSidebarHeader",
+    [2] = "TerminalMateSidebarDivider",
+  }
+
+  for _, row in ipairs(rows) do
+    local line_number = #lines + 1
+    table.insert(lines, string.format("%-" .. width .. "s", row.line))
+    terminal_ids[line_number] = row.terminal_id
+    line_highlights[line_number] = row.active and "TerminalMateSidebarActive" or "TerminalMateSidebarInactive"
+  end
+
+  local active_line = active_row + 2
+  return lines, terminal_ids, line_highlights, width, active_line
 end
 
-local function render_sidebar(lines, terminal_ids, active_line)
+local function render_sidebar(lines, terminal_ids, line_highlights, active_line)
   local sidebar_buf = get_or_create_sidebar_buf()
   local sidebar_win = state.sidebar_win
   if not sidebar_win or not vim.api.nvim_win_is_valid(sidebar_win) then
@@ -678,7 +716,7 @@ local function render_sidebar(lines, terminal_ids, active_line)
   vim.api.nvim_buf_clear_namespace(sidebar_buf, SIDEBAR_NS, 0, -1)
 
   for index, _ in ipairs(lines) do
-    local hl_group = index == active_line and "TerminalMateSidebarActive" or "TerminalMateSidebarInactive"
+    local hl_group = line_highlights[index] or "TerminalMateSidebarInactive"
     vim.api.nvim_buf_add_highlight(sidebar_buf, SIDEBAR_NS, hl_group, index - 1, 0, -1)
   end
 
@@ -706,8 +744,8 @@ sync_nvim_sidebar = function()
     return
   end
 
-  local lines, terminal_ids, width, active_line = build_sidebar_entries()
-  if #terminal_ids == 0 then
+  local lines, terminal_ids, line_highlights, width, active_line = build_sidebar_entries()
+  if #lines <= 2 then
     close_nvim_sidebar()
     return
   end
@@ -719,7 +757,7 @@ sync_nvim_sidebar = function()
     return
   end
 
-  render_sidebar(lines, terminal_ids, active_line)
+  render_sidebar(lines, terminal_ids, line_highlights, active_line)
 end
 
 switch_nvim_terminal = function(terminal_id)
