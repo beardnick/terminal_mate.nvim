@@ -22,6 +22,7 @@
 ---@field history_prev string Navigate to previous (older) history entry
 ---@field history_next string Navigate to next (newer) history entry
 ---@field history_search string Open history search picker
+---@field accept_suggestion string Accept the current autosuggestion
 
 ---@class TerminalMateBuffer
 ---@field filetype string Filetype for the input buffer
@@ -50,6 +51,7 @@ M.defaults = {
     history_prev = "<Up>",
     history_next = "<Down>",
     history_search = "<C-r>",
+    accept_suggestion = "<Right>",
   },
   buffer = {
     filetype = "terminal_mate",

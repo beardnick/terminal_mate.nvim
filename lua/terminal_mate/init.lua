@@ -11,6 +11,8 @@ local SIDEBAR_FILETYPE = "terminal_mate_sidebar"
 local SIDEBAR_MIN_WIDTH = 10
 local SIDEBAR_MAX_WIDTH = 18
 local SIDEBAR_NS = vim.api.nvim_create_namespace("TerminalMateSidebar")
+local AUTOSUGGEST_NS = vim.api.nvim_create_namespace("TerminalMateAutosuggest")
+local AUTOSUGGEST_PREVIEW_MAX = 120
 
 --- State
 local state = {
@@ -33,6 +35,7 @@ local state = {
   nvim_pane_id = nil,        -- tmux pane id where nvim runs
   input_buf = nil,           -- buffer number for the command input
   is_open = false,           -- true when the dedicated TerminalMate input UI is active
+  autosuggestion = nil,      -- active history-backed autosuggestion for the input buffer
   history = {},              -- command history (loaded from zsh + session)
   history_index = 0,         -- 0 = not browsing, 1 = most recent
   _saved_nvim_height = nil,  -- saved nvim pane height before search resize
@@ -111,6 +114,10 @@ end
 local switch_nvim_terminal
 local sync_nvim_sidebar
 local show_nvim_terminal
+local ensure_history_loaded
+local clear_input_autosuggestion
+local render_input_autosuggestion
+local setup_input_buffer_autocmds
 
 ---@param text string
 ---@param width number
@@ -118,6 +125,7 @@ local show_nvim_terminal
 local function setup_sidebar_highlights()
   vim.api.nvim_set_hl(0, "TerminalMateSidebarActive", { default = true, bold = true, reverse = true })
   vim.api.nvim_set_hl(0, "TerminalMateSidebarInactive", { default = true, link = "Normal" })
+  vim.api.nvim_set_hl(0, "TerminalMateSuggestion", { default = true, link = "Comment" })
 end
 
 ---@param win number|nil
@@ -452,6 +460,213 @@ local function add_to_history(cmd)
   state.history_index = 0
 end
 
+---@param text string
+---@return string[]
+local function split_buffer_text(text)
+  local lines = vim.split(text, "\n", { plain = true })
+  if #lines == 0 then
+    return { "" }
+  end
+  return lines
+end
+
+---@param buf number
+---@return string
+local function get_raw_buffer_text(buf)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  if #lines == 0 then
+    return ""
+  end
+  return table.concat(lines, "\n")
+end
+
+---@param buf number
+---@param text string
+---@return string[]
+local function set_buffer_text(buf, text)
+  local lines = split_buffer_text(text)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  return lines
+end
+
+---@param win number
+---@param buf number
+local function move_cursor_to_buffer_end(win, buf)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  local line_count = math.max(vim.api.nvim_buf_line_count(buf), 1)
+  local last_line = vim.api.nvim_buf_get_lines(buf, line_count - 1, line_count, false)[1] or ""
+  vim.api.nvim_win_set_cursor(win, { line_count, #last_line })
+end
+
+---@param remainder string
+---@return string
+local function format_autosuggestion_preview(remainder)
+  local preview = remainder:gsub("\n", " \\ ")
+  if #preview > AUTOSUGGEST_PREVIEW_MAX then
+    preview = preview:sub(1, AUTOSUGGEST_PREVIEW_MAX - 3) .. "..."
+  end
+  return preview
+end
+
+---@param prefix string
+---@return string|nil
+local function find_history_suggestion(prefix)
+  if prefix == "" then
+    return nil
+  end
+
+  ensure_history_loaded()
+
+  for index = #state.history, 1, -1 do
+    local entry = state.history[index]
+    if entry ~= prefix and entry:sub(1, #prefix) == prefix then
+      return entry
+    end
+  end
+
+  return nil
+end
+
+---@param buf number
+---@param win number
+---@return table|nil
+local function get_autosuggestion_candidate(buf, win)
+  if not buf
+    or not vim.api.nvim_buf_is_valid(buf)
+    or not win
+    or not vim.api.nvim_win_is_valid(win)
+    or vim.api.nvim_win_get_buf(win) ~= buf
+  then
+    return nil
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  if #lines == 0 then
+    return nil
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local row = cursor[1]
+  local col = cursor[2]
+
+  if row ~= #lines or col ~= #lines[#lines] then
+    return nil
+  end
+
+  local prefix = table.concat(lines, "\n")
+  if prefix == "" then
+    return nil
+  end
+
+  local suggestion = find_history_suggestion(prefix)
+  if not suggestion then
+    return nil
+  end
+
+  local remainder = suggestion:sub(#prefix + 1)
+  if remainder == "" then
+    return nil
+  end
+
+  local preview = format_autosuggestion_preview(remainder)
+  if preview == "" then
+    return nil
+  end
+
+  return {
+    buf = buf,
+    row = row,
+    col = col,
+    text = suggestion,
+    remainder = remainder,
+    preview = preview,
+  }
+end
+
+clear_input_autosuggestion = function(buf)
+  local target_buf = buf or (state.autosuggestion and state.autosuggestion.buf) or state.input_buf
+  if target_buf and vim.api.nvim_buf_is_valid(target_buf) then
+    vim.api.nvim_buf_clear_namespace(target_buf, AUTOSUGGEST_NS, 0, -1)
+  end
+  state.autosuggestion = nil
+end
+
+render_input_autosuggestion = function(buf, win)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    state.autosuggestion = nil
+    return nil
+  end
+
+  clear_input_autosuggestion(buf)
+
+  local candidate = get_autosuggestion_candidate(buf, win)
+  if not candidate then
+    return nil
+  end
+
+  vim.api.nvim_buf_set_extmark(buf, AUTOSUGGEST_NS, candidate.row - 1, candidate.col, {
+    virt_text = { { candidate.preview, "TerminalMateSuggestion" } },
+    virt_text_pos = "overlay",
+    hl_mode = "combine",
+  })
+
+  state.autosuggestion = candidate
+  return candidate
+end
+
+setup_input_buffer_autocmds = function(buf)
+  if vim.b[buf].terminal_mate_autosuggest_ready then
+    return
+  end
+  vim.b[buf].terminal_mate_autosuggest_ready = true
+
+  local group = vim.api.nvim_create_augroup("TerminalMateInput" .. buf, { clear = true })
+
+  vim.api.nvim_create_autocmd(
+    { "TextChangedI", "TextChanged", "CursorMovedI", "CursorMoved", "BufEnter", "InsertEnter", "WinEnter" },
+    {
+      group = group,
+      buffer = buf,
+      callback = function()
+        if not vim.api.nvim_buf_is_valid(buf) then
+          return
+        end
+
+        local win = vim.api.nvim_get_current_win()
+        if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
+          clear_input_autosuggestion(buf)
+          return
+        end
+
+        render_input_autosuggestion(buf, win)
+      end,
+    }
+  )
+
+  vim.api.nvim_create_autocmd({ "BufLeave", "InsertLeave", "BufHidden" }, {
+    group = group,
+    buffer = buf,
+    callback = function()
+      clear_input_autosuggestion(buf)
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = group,
+    buffer = buf,
+    once = true,
+    callback = function()
+      clear_input_autosuggestion(buf)
+      if state.input_buf == buf then
+        state.input_buf = nil
+      end
+    end,
+  })
+end
+
 --- Create or get the input buffer
 ---@return number bufnr
 local function get_or_create_input_buf()
@@ -468,6 +683,7 @@ local function get_or_create_input_buf()
   vim.api.nvim_buf_set_option(buf, "syntax", "sh")
 
   state.input_buf = buf
+  setup_input_buffer_autocmds(buf)
   return buf
 end
 
@@ -1249,8 +1465,11 @@ end
 --- Clear the buffer content
 local function clear_buffer()
   if config.options.clear_input then
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, { "" })
+    set_buffer_text(0, "")
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    if vim.api.nvim_get_current_buf() == state.input_buf then
+      render_input_autosuggestion(0, vim.api.nvim_get_current_win())
+    end
   end
 end
 
@@ -1274,7 +1493,7 @@ local function restore_nvim_pane_size()
   state._saved_nvim_height = nil
 end
 
-local function ensure_history_loaded()
+ensure_history_loaded = function()
   if #state.history == 0 then
     state.history = dedupe_history(load_zsh_history())
   end
@@ -1343,6 +1562,7 @@ function M.open()
   vim.wo.signcolumn = "no"
   vim.wo.number = false
   vim.wo.relativenumber = false
+  render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
   if backend == "tmux" then
     notify("TerminalMate mode opened (" .. target .. ", tmux backend)")
@@ -1396,6 +1616,7 @@ function M.new_terminal()
   vim.wo.signcolumn = "no"
   vim.wo.number = false
   vim.wo.relativenumber = false
+  render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
   if backend == "tmux" then
     notify("Terminal pane opened (" .. target .. ", tmux backend)")
@@ -1621,15 +1842,15 @@ function M.history_prev()
   end
 
   if state.history_index == 0 then
-    state._saved_input = get_buffer_text()
+    state._saved_input = get_raw_buffer_text(0)
   end
 
   state.history_index = math.min(state.history_index + 1, #state.history)
   local cmd = state.history[#state.history - state.history_index + 1]
   if cmd then
-    local lines = vim.split(cmd, "\n", { plain = true })
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+    local lines = set_buffer_text(0, cmd)
     vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+    render_input_autosuggestion(0, vim.api.nvim_get_current_win())
   end
 end
 
@@ -1643,21 +1864,42 @@ function M.history_next()
 
   if state.history_index == 0 then
     local saved = state._saved_input or ""
-    local lines = vim.split(saved, "\n", { plain = true })
-    if #lines == 0 then
-      lines = { "" }
-    end
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+    local lines = set_buffer_text(0, saved)
     vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+    render_input_autosuggestion(0, vim.api.nvim_get_current_win())
     return
   end
 
   local cmd = state.history[#state.history - state.history_index + 1]
   if cmd then
-    local lines = vim.split(cmd, "\n", { plain = true })
-    vim.api.nvim_buf_set_lines(0, 0, -1, false, lines)
+    local lines = set_buffer_text(0, cmd)
     vim.api.nvim_win_set_cursor(0, { #lines, #lines[#lines] })
+    render_input_autosuggestion(0, vim.api.nvim_get_current_win())
   end
+end
+
+--- Accept the current autosuggestion into the input buffer.
+---@return boolean
+function M.accept_suggestion()
+  local buf = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
+
+  if buf ~= state.input_buf or not vim.api.nvim_win_is_valid(win) then
+    return false
+  end
+
+  local candidate = get_autosuggestion_candidate(buf, win)
+  if not candidate then
+    return false
+  end
+
+  local lines = set_buffer_text(buf, candidate.text)
+  move_cursor_to_buffer_end(win, buf)
+  state.history_index = 0
+  state.autosuggestion = nil
+  render_input_autosuggestion(buf, win)
+
+  return #lines > 0
 end
 
 --- Simple fuzzy match: all characters in query must appear in str in order
@@ -1798,12 +2040,12 @@ function M.history_search()
       local choice = picker.filtered[picker.selected]
       close_picker()
       if choice and caller_buf and vim.api.nvim_buf_is_valid(caller_buf) then
-        local lines = vim.split(choice, "\n", { plain = true })
-        vim.api.nvim_buf_set_lines(caller_buf, 0, -1, false, lines)
+        set_buffer_text(caller_buf, choice)
         for _, win in ipairs(vim.api.nvim_list_wins()) do
           if vim.api.nvim_win_get_buf(win) == caller_buf then
             vim.api.nvim_set_current_win(win)
-            vim.api.nvim_win_set_cursor(win, { #lines, #lines[#lines] })
+            move_cursor_to_buffer_end(win, caller_buf)
+            render_input_autosuggestion(caller_buf, win)
             break
           end
         end
@@ -1946,6 +2188,17 @@ function M._setup_buffer_keymaps(buf)
     vim.cmd("stopinsert")
     M.history_search()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search history (insert)" }))
+
+  if keymap.accept_suggestion and keymap.accept_suggestion ~= "" then
+    vim.keymap.set("i", keymap.accept_suggestion, function()
+      if M.accept_suggestion() then
+        return
+      end
+
+      local rhs = vim.api.nvim_replace_termcodes(keymap.accept_suggestion, true, false, true)
+      vim.api.nvim_feedkeys(rhs, "in", false)
+    end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Accept autosuggestion" }))
+  end
 
   vim.keymap.set("n", keymap.clear, function()
     M.clear()

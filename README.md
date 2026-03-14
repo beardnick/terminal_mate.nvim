@@ -14,6 +14,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
+- **Zsh-like Autosuggestions**: Show history-backed ghost text in the input buffer and accept it with `<Right>`.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
 - **tmux Fallback**: When you select the tmux backend, TerminalMate reuses an adjacent tmux pane when possible or creates one above the current pane.
 
@@ -44,8 +45,9 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 5. The active row is emphasized with a stronger highlight and a slim left marker.
 6. Click a terminal row or press `Enter` on it to switch to that managed terminal.
 7. Type your command(s) in the input buffer.
-8. Press `Ctrl+S` to send the buffer to the latest active terminal.
-9. The buffer is cleared and you stay ready for the next command.
+8. Matching history entries appear as ghost text at the cursor, similar to zsh autosuggestions.
+9. Press `<Right>` to accept the current suggestion, or `Ctrl+S` to send the buffer to the latest active terminal.
+10. The buffer is cleared and you stay ready for the next command.
 
 ### Managing Multiple Terminals
 
@@ -68,6 +70,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ### History Navigation
 
 - Press `Up` / `Down` to browse through previous commands (zsh history + session history).
+- Press `<Right>` to accept the current inline autosuggestion from history.
 - Press `Ctrl+R` to open a fuzzy search picker over your entire command history.
 
 ## Commands
@@ -104,6 +107,7 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<Up>` | Normal / Insert | Previous command from history |
 | `<Down>` | Normal / Insert | Next command from history |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
+| `<Right>` | Insert | Accept the current autosuggestion |
 | `<C-l>` | Normal | Clear the terminal screen |
 | `<C-c>` | Normal | Send interrupt signal (Ctrl-C) |
 
@@ -148,6 +152,7 @@ require("terminal_mate").setup({
     history_prev = "<Up>",
     history_next = "<Down>",
     history_search = "<C-r>",
+    accept_suggestion = "<Right>",
   },
 
   buffer = {
@@ -165,7 +170,7 @@ require("terminal_mate").setup({
 
 ## How History Works
 
-When the terminal pane is first opened, the plugin loads your zsh history from `$HISTFILE` (defaults to `~/.zsh_history`). If that file is not found, it falls back to `~/.bash_history`. Commands you send during the session are also added to the in-memory history. The history is deduplicated, keeping the most recent occurrence of each command.
+When the terminal pane is first opened, the plugin loads your zsh history from `$HISTFILE` (defaults to `~/.zsh_history`). If that file is not found, it falls back to `~/.bash_history`. Commands you send during the session are also added to the in-memory history. The history is deduplicated, keeping the most recent occurrence of each command, and the newest prefix match is used for inline autosuggestions.
 
 ## License
 
