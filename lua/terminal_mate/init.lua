@@ -14,7 +14,7 @@ local SIDEBAR_MAX_WIDTH = 18
 local SIDEBAR_NS = vim.api.nvim_create_namespace("TerminalMateSidebar")
 local AUTOSUGGEST_NS = vim.api.nvim_create_namespace("TerminalMateAutosuggest")
 local AUTOSUGGEST_PREVIEW_MAX = 120
-local INPUT_COMPLETEOPT = "menu,menuone,noselect"
+local INPUT_COMPLETEOPT = "menu,menuone,noinsert"
 
 --- State
 local state = {

@@ -79,9 +79,11 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 ### Native Zsh Completion
 
-- Press `<Tab>` inside the TerminalMate input buffer to trigger completion through an interactive `zsh` session.
+- Press `<Tab>` inside the TerminalMate input buffer to trigger fuzzy-ranked completion through an interactive `zsh` session.
 - TerminalMate reuses your normal zsh completion setup, including `compinit`, `compdef`, git completion, and any `bashcompinit` / `complete` configuration loaded from your shell startup files.
 - Directory and file completion work the same way as your regular zsh prompt, so commands like `cd`, `ls`, script paths, and redirects complete naturally.
+- Partial option queries widen the shell lookup before filtering, so inputs like `curl -d` can still surface both `-d` and `--data`.
+- When multiple matches are available, the first candidate is preselected so you can tab through results immediately.
 - `<S-Tab>` moves backward through the popup menu when multiple matches are available.
 
 ## Commands
@@ -119,7 +121,7 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<Down>` | Normal / Insert | Next command from history |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
 | `<Right>` | Insert | Accept the current autosuggestion |
-| `<Tab>` | Insert | Trigger native zsh completion / move to next item |
+| `<Tab>` | Insert | Trigger fuzzy zsh completion / move to next item |
 | `<S-Tab>` | Insert | Move to previous completion item |
 | `<C-l>` | Normal | Clear the terminal screen |
 | `<C-c>` | Normal | Send interrupt signal (Ctrl-C) |

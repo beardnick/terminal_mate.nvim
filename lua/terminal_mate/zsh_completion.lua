@@ -153,6 +153,182 @@ local function find_token_start(line, cursor_col)
   return start_col
 end
 
+---@param str string
+---@param query string
+---@return boolean
+local function fuzzy_match(str, query)
+  if query == "" then
+    return true
+  end
+
+  local lower_str = str:lower()
+  local lower_q = query:lower()
+  local si = 1
+
+  for qi = 1, #lower_q do
+    local ch = lower_q:sub(qi, qi)
+    local found = lower_str:find(ch, si, true)
+    if not found then
+      return false
+    end
+    si = found + 1
+  end
+
+  return true
+end
+
+---@param line string
+---@param cursor_col number
+---@return string
+local function current_completion_query(line, cursor_col)
+  local start_col = find_token_start(line, cursor_col)
+  if cursor_col < start_col then
+    return ""
+  end
+
+  return line:sub(start_col, cursor_col)
+end
+
+---@class TerminalMateCompletionRequest
+---@field request_line string
+---@field request_cursor_col number
+---@field filter_query string
+---@field preserve_input boolean
+
+---@param line string
+---@param cursor_col number
+---@return TerminalMateCompletionRequest
+local function build_completion_request(line, cursor_col)
+  local query = current_completion_query(line, cursor_col)
+  local request = {
+    request_line = line,
+    request_cursor_col = cursor_col,
+    filter_query = query,
+    preserve_input = false,
+  }
+
+  local option_prefix = query:match("^(%-%-?)[%w-]+$")
+  if not option_prefix then
+    return request
+  end
+
+  local start_col = find_token_start(line, cursor_col)
+  request.request_line = line:sub(1, start_col - 1) .. option_prefix .. line:sub(cursor_col + 1)
+  request.request_cursor_col = (start_col - 1) + #option_prefix
+  request.preserve_input = true
+
+  return request
+end
+
+---@param items table[]
+---@param query string
+---@return table[]
+local function sort_items_by_word(items)
+  table.sort(items, function(a, b)
+    local a_word = a.word or ""
+    local b_word = b.word or ""
+
+    if #a_word == #b_word then
+      return a_word < b_word
+    end
+
+    return #a_word < #b_word
+  end)
+
+  return items
+end
+
+---@param query string
+---@return string|nil
+local function option_query_body(query)
+  local body = query:match("^%-%-?([%w-]+)$")
+  if not body or body == "" then
+    return nil
+  end
+
+  return body:lower()
+end
+
+---@param items table[]
+---@param query string
+---@return table[]|nil
+local function fuzzy_sort_option_items(items, query)
+  local body = option_query_body(query)
+  if not body then
+    return nil
+  end
+
+  local query_lower = query:lower()
+  local exact_prefix = {}
+  local body_prefix = {}
+  local body_fuzzy = {}
+
+  for _, item in ipairs(items) do
+    local word = item.word or ""
+    local lower_word = word:lower()
+    local normalized = lower_word:gsub("^%-%-?", "")
+
+    if lower_word:sub(1, #query_lower) == query_lower then
+      table.insert(exact_prefix, item)
+    elseif normalized:sub(1, #body) == body then
+      table.insert(body_prefix, item)
+    elseif #body > 1 and fuzzy_match(normalized, body) then
+      table.insert(body_fuzzy, item)
+    end
+  end
+
+  if #exact_prefix == 0 and #body_prefix == 0 and #body_fuzzy == 0 then
+    return nil
+  end
+
+  sort_items_by_word(exact_prefix)
+  sort_items_by_word(body_prefix)
+  sort_items_by_word(body_fuzzy)
+
+  local ordered = {}
+  for _, group in ipairs({ exact_prefix, body_prefix, body_fuzzy }) do
+    for _, item in ipairs(group) do
+      table.insert(ordered, item)
+    end
+  end
+
+  return ordered
+end
+
+---@param items table[]
+---@param query string
+---@return table[]
+local function fuzzy_sort_items(items, query)
+  if query == "" or #items <= 1 then
+    return items
+  end
+
+  local option_items = fuzzy_sort_option_items(items, query)
+  if option_items then
+    return option_items
+  end
+
+  if vim.fn.exists("*matchfuzzy") == 1 then
+    local ok, matches = pcall(vim.fn.matchfuzzy, items, query, { key = "word" })
+    if ok and type(matches) == "table" and #matches > 0 then
+      return matches
+    end
+  end
+
+  local filtered = {}
+  for _, item in ipairs(items) do
+    if fuzzy_match(item.word or "", query) then
+      table.insert(filtered, item)
+    end
+  end
+
+  if #filtered > 0 then
+    return filtered
+  end
+
+  return items
+end
+
 local function parse_items(output)
   local items = {}
   local seen = {}
@@ -433,8 +609,9 @@ function M.complete_at_cursor(buf, win)
   local line_nr = cursor[1]
   local cursor_col = cursor[2]
   local line = vim.api.nvim_buf_get_lines(buf, line_nr - 1, line_nr, false)[1] or ""
+  local request = build_completion_request(line, cursor_col)
 
-  M.request(line, cursor_col, function(result, err)
+  M.request(request.request_line, request.request_cursor_col, function(result, err)
     vim.schedule(function()
       if err or not result then
         insert_literal_tab(buf, win)
@@ -451,8 +628,8 @@ function M.complete_at_cursor(buf, win)
         return
       end
 
-      local updated_line = result.line ~= "" and result.line or line
-      local updated_cursor = result.cursor_col
+      local updated_line = request.preserve_input and line or (result.line ~= "" and result.line or line)
+      local updated_cursor = request.preserve_input and cursor_col or result.cursor_col
 
       if updated_line ~= line then
         vim.api.nvim_buf_set_lines(buf, line_nr - 1, line_nr, false, { updated_line })
@@ -466,12 +643,14 @@ function M.complete_at_cursor(buf, win)
         return
       end
 
-      if #result.items == 1 and updated_line ~= line then
+      local items = fuzzy_sort_items(result.items, request.filter_query)
+
+      if #items == 1 and updated_line ~= line then
         return
       end
 
       local start_col = find_token_start(updated_line, updated_cursor)
-      vim.fn.complete(start_col, result.items)
+      vim.fn.complete(start_col, items)
     end)
   end)
 end
