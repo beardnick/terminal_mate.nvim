@@ -14,6 +14,7 @@ local SIDEBAR_MAX_WIDTH = 18
 local SIDEBAR_NS = vim.api.nvim_create_namespace("TerminalMateSidebar")
 local AUTOSUGGEST_NS = vim.api.nvim_create_namespace("TerminalMateAutosuggest")
 local AUTOSUGGEST_PREVIEW_MAX = 120
+local INPUT_COMPLETEOPT = "menu,menuone,noselect"
 
 --- State
 local state = {
@@ -52,6 +53,7 @@ local function apply_minimal_ui()
     ruler = vim.o.ruler,
     showmode = vim.o.showmode,
     showcmd = vim.o.showcmd,
+    completeopt = vim.o.completeopt,
     signcolumn = vim.wo.signcolumn,
     number = vim.wo.number,
     relativenumber = vim.wo.relativenumber,
@@ -76,6 +78,7 @@ local function restore_ui()
   vim.o.ruler = state._saved_ui.ruler
   vim.o.showmode = state._saved_ui.showmode
   vim.o.showcmd = state._saved_ui.showcmd
+  vim.o.completeopt = state._saved_ui.completeopt
 
   pcall(function()
     vim.wo.signcolumn = state._saved_ui.signcolumn
@@ -110,6 +113,17 @@ local function is_normal_window(win)
 
   local ok, cfg = pcall(vim.api.nvim_win_get_config, win)
   return ok and cfg.relative == ""
+end
+
+---@param win number
+local function apply_input_window_options(win)
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+
+  if config.options.completion.enabled then
+    vim.o.completeopt = INPUT_COMPLETEOPT
+  end
 end
 
 local switch_nvim_terminal
@@ -682,7 +696,6 @@ local function get_or_create_input_buf()
   vim.bo[buf].swapfile = false
   vim.bo[buf].bufhidden = "hide"
   vim.api.nvim_buf_set_option(buf, "syntax", "sh")
-  vim.bo[buf].completeopt = "menu,menuone,noselect"
 
   state.input_buf = buf
   setup_input_buffer_autocmds(buf)
@@ -1566,9 +1579,7 @@ function M.open()
   vim.api.nvim_set_current_buf(buf)
   M._setup_buffer_keymaps(buf)
 
-  vim.wo.signcolumn = "no"
-  vim.wo.number = false
-  vim.wo.relativenumber = false
+  apply_input_window_options(vim.api.nvim_get_current_win())
   render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
   if backend == "tmux" then
@@ -1620,9 +1631,7 @@ function M.new_terminal()
   vim.api.nvim_set_current_buf(buf)
   M._setup_buffer_keymaps(buf)
 
-  vim.wo.signcolumn = "no"
-  vim.wo.number = false
-  vim.wo.relativenumber = false
+  apply_input_window_options(vim.api.nvim_get_current_win())
   render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
   if backend == "tmux" then
