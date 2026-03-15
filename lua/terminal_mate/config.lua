@@ -7,6 +7,7 @@
 ---@field clear_input boolean Clear the input buffer after sending
 ---@field keymap TerminalMateKeymap
 ---@field buffer TerminalMateBuffer
+---@field completion TerminalMateCompletion
 
 ---@class TerminalMateKeymap
 ---@field send_line string Send all buffer content in normal/insert mode
@@ -23,10 +24,16 @@
 ---@field history_next string Navigate to next (newer) history entry
 ---@field history_search string Open history search picker
 ---@field accept_suggestion string Accept the current autosuggestion
+---@field completion_trigger string Trigger native shell completion in insert mode
+---@field completion_prev string Select the previous completion item in insert mode
 
 ---@class TerminalMateBuffer
 ---@field filetype string Filetype for the input buffer
 ---@field bufname string Name for the input buffer
+
+---@class TerminalMateCompletion
+---@field enabled boolean Enable native zsh completion in the TerminalMate input buffer
+---@field shell string|nil Zsh executable to use for completion (nil = auto-detect)
 
 local M = {}
 
@@ -37,6 +44,10 @@ M.defaults = {
   close_on_exit = true,
   auto_scroll = true,
   clear_input = true,
+  completion = {
+    enabled = true,
+    shell = nil,
+  },
   keymap = {
     send_line = "<C-s>",
     send_visual = "<leader>ts",
@@ -52,6 +63,8 @@ M.defaults = {
     history_next = "<Down>",
     history_search = "<C-r>",
     accept_suggestion = "<Right>",
+    completion_trigger = "<Tab>",
+    completion_prev = "<S-Tab>",
   },
   buffer = {
     filetype = "terminal_mate",

@@ -15,12 +15,14 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
 - **Zsh-like Autosuggestions**: Show history-backed ghost text in the input buffer and accept it with `<Right>`.
+- **Native Zsh Completion**: Press `<Tab>` in the input buffer to use a real background zsh session for file, directory, branch, option, and command completion.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
 - **tmux Fallback**: When you select the tmux backend, TerminalMate reuses an adjacent tmux pane when possible or creates one above the current pane.
 
 ## Requirements
 
 - [Neovim](https://neovim.io/) >= 0.8
+- [zsh](https://www.zsh.org/) is recommended for native TerminalMate completion inside the input buffer
 - [tmux](https://github.com/tmux/tmux) is optional and only required when using the tmux backend or fallback path
 
 ## Installation
@@ -46,8 +48,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 6. Click a terminal row or press `Enter` on it to switch to that managed terminal.
 7. Type your command(s) in the input buffer.
 8. Matching history entries appear as ghost text at the cursor, similar to zsh autosuggestions.
-9. Press `<Right>` to accept the current suggestion, or `Ctrl+S` to send the buffer to the latest active terminal.
-10. The buffer is cleared and you stay ready for the next command.
+9. Press `<Right>` to accept the current history suggestion, or `<Tab>` to ask zsh for native shell completion.
+10. Use `<S-Tab>` to move backward in the completion menu when it is visible.
+11. Press `Ctrl+S` to send the buffer to the latest active terminal.
+12. The buffer is cleared and you stay ready for the next command.
 
 ### Managing Multiple Terminals
 
@@ -72,6 +76,13 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - Press `Up` / `Down` to browse through previous commands (zsh history + session history).
 - Press `<Right>` to accept the current inline autosuggestion from history.
 - Press `Ctrl+R` to open a fuzzy search picker over your entire command history.
+
+### Native Zsh Completion
+
+- Press `<Tab>` inside the TerminalMate input buffer to trigger completion through an interactive `zsh` session.
+- TerminalMate reuses your normal zsh completion setup, including `compinit`, `compdef`, git completion, and any `bashcompinit` / `complete` configuration loaded from your shell startup files.
+- Directory and file completion work the same way as your regular zsh prompt, so commands like `cd`, `ls`, script paths, and redirects complete naturally.
+- `<S-Tab>` moves backward through the popup menu when multiple matches are available.
 
 ## Commands
 
@@ -108,6 +119,8 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<Down>` | Normal / Insert | Next command from history |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
 | `<Right>` | Insert | Accept the current autosuggestion |
+| `<Tab>` | Insert | Trigger native zsh completion / move to next item |
+| `<S-Tab>` | Insert | Move to previous completion item |
 | `<C-l>` | Normal | Clear the terminal screen |
 | `<C-c>` | Normal | Send interrupt signal (Ctrl-C) |
 
@@ -153,11 +166,19 @@ require("terminal_mate").setup({
     history_next = "<Down>",
     history_search = "<C-r>",
     accept_suggestion = "<Right>",
+    completion_trigger = "<Tab>",
+    completion_prev = "<S-Tab>",
   },
 
   buffer = {
     filetype = "terminal_mate",
     bufname = "[TerminalMate]",
+  },
+
+  completion = {
+    enabled = true,
+    -- nil = use $SHELL when it is zsh, otherwise fall back to `zsh`.
+    shell = nil,
   },
 })
 ```

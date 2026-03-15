@@ -3,6 +3,7 @@
 local config = require("terminal_mate.config")
 local nvim_terminal = require("terminal_mate.nvim_terminal")
 local tmux = require("terminal_mate.tmux")
+local zsh_completion = require("terminal_mate.zsh_completion")
 
 local M = {}
 
@@ -681,9 +682,15 @@ local function get_or_create_input_buf()
   vim.bo[buf].swapfile = false
   vim.bo[buf].bufhidden = "hide"
   vim.api.nvim_buf_set_option(buf, "syntax", "sh")
+  vim.bo[buf].completeopt = "menu,menuone,noselect"
 
   state.input_buf = buf
   setup_input_buffer_autocmds(buf)
+
+  if config.options.completion.enabled then
+    zsh_completion.prime()
+  end
+
   return buf
 end
 
@@ -2200,6 +2207,16 @@ function M._setup_buffer_keymaps(buf)
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Accept autosuggestion" }))
   end
 
+  if config.options.completion.enabled then
+    vim.keymap.set("i", keymap.completion_trigger, function()
+      zsh_completion.complete_at_cursor(buf, vim.api.nvim_get_current_win())
+    end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Trigger shell completion" }))
+
+    vim.keymap.set("i", keymap.completion_prev, function()
+      zsh_completion.select_prev()
+    end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous shell completion" }))
+  end
+
   vim.keymap.set("n", keymap.clear, function()
     M.clear()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Clear terminal" }))
@@ -2245,6 +2262,13 @@ local function setup_autocmds()
     end,
   })
 
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = group,
+    callback = function()
+      zsh_completion.stop()
+    end,
+  })
+
   if config.options.close_on_exit then
     vim.api.nvim_create_autocmd("VimLeavePre", {
       group = group,
@@ -2263,6 +2287,7 @@ end
 ---@param opts table|nil
 function M.setup(opts)
   config.setup(opts)
+  zsh_completion.setup(config.options.completion)
   setup_sidebar_highlights()
   setup_autocmds()
 
