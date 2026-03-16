@@ -2194,12 +2194,20 @@ function M._setup_buffer_keymaps(buf)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Next history" }))
 
   vim.keymap.set("i", keymap.history_prev, function()
+    if config.options.completion.enabled and zsh_completion.select_prev() then
+      return
+    end
+
     vim.cmd("stopinsert")
     M.history_prev()
     vim.cmd("startinsert!")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous history (insert)" }))
 
   vim.keymap.set("i", keymap.history_next, function()
+    if config.options.completion.enabled and zsh_completion.select_next() then
+      return
+    end
+
     vim.cmd("stopinsert")
     M.history_next()
     vim.cmd("startinsert!")
@@ -2233,6 +2241,15 @@ function M._setup_buffer_keymaps(buf)
     vim.keymap.set("i", keymap.completion_prev, function()
       zsh_completion.select_prev()
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous shell completion" }))
+
+    vim.keymap.set("i", "<CR>", function()
+      if zsh_completion.confirm() then
+        return
+      end
+
+      local rhs = vim.api.nvim_replace_termcodes("<CR>", true, false, true)
+      vim.api.nvim_feedkeys(rhs, "in", false)
+    end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Confirm shell completion" }))
   end
 
   vim.keymap.set("n", keymap.clear, function()

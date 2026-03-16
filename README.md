@@ -49,9 +49,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 7. Type your command(s) in the input buffer.
 8. Matching history entries appear as ghost text at the cursor, similar to zsh autosuggestions.
 9. Press `<Right>` to accept the current history suggestion; zsh-backed completion opens automatically as you type and refreshes after edits like backspace.
-10. Use `<Tab>` / `<S-Tab>` to move through the completion menu when it is visible, or switch to `completion.trigger = "tab"` if you prefer manual completion.
-11. Press `Ctrl+S` to send the buffer to the latest active terminal.
-12. The buffer is cleared and you stay ready for the next command.
+10. Use `<Tab>` / `<S-Tab>` or `<Up>` / `<Down>` to move through the completion menu when it is visible; press `<Enter>` to confirm the current item.
+11. Switch to `completion.trigger = "tab"` if you prefer manual completion.
+12. Press `Ctrl+S` to send the buffer to the latest active terminal.
+13. The buffer is cleared and you stay ready for the next command.
 
 ### Managing Multiple Terminals
 
@@ -73,7 +74,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 ### History Navigation
 
-- Press `Up` / `Down` to browse through previous commands (zsh history + session history).
+- Press `Up` / `Down` to browse through previous commands (zsh history + session history) when the completion menu is not visible.
 - Press `<Right>` to accept the current inline autosuggestion from history.
 - Press `Ctrl+R` to open a fuzzy search picker over your entire command history.
 
@@ -85,6 +86,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - Directory and file completion work the same way as your regular zsh prompt, so commands like `cd`, `ls`, script paths, and redirects complete naturally.
 - Partial option queries widen the shell lookup before filtering, so inputs like `curl -d` can still surface both `-d` and `--data`.
 - When multiple matches are available, the first candidate is preselected so you can tab through results immediately.
+- Use `<Up>` / `<Down>` or `<Tab>` / `<S-Tab>` to move through the popup menu, and `<Enter>` to accept the current completion.
 - Set `completion.trigger = "tab"` if you prefer to open completion manually with the configured trigger key.
 - `<S-Tab>` moves backward through the popup menu when multiple matches are available.
 
@@ -119,10 +121,11 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<leader>ts` | Visual | Send visual selection to terminal |
 | `<leader>tn` | Normal | Create a new terminal instance |
 | `<leader>th` | Normal | Hide the current terminal pane |
-| `<Up>` | Normal / Insert | Previous command from history |
-| `<Down>` | Normal / Insert | Next command from history |
+| `<Up>` | Normal / Insert | Previous command from history / previous completion item |
+| `<Down>` | Normal / Insert | Next command from history / next completion item |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
 | `<Right>` | Insert | Accept the current autosuggestion |
+| `<CR>` | Insert | Confirm current completion item / insert newline |
 | `<Tab>` | Insert | Move to next completion item / trigger completion when `completion.trigger = "tab"` |
 | `<S-Tab>` | Insert | Move to previous completion item |
 | `<C-l>` | Normal | Clear the terminal screen |

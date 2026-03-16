@@ -402,6 +402,12 @@ local function close_completion_menu()
   vim.api.nvim_feedkeys(rhs, "in", false)
 end
 
+---@param keys string
+local function feed_insert_keys(keys)
+  local rhs = vim.api.nvim_replace_termcodes(keys, true, false, true)
+  vim.api.nvim_feedkeys(rhs, "in", false)
+end
+
 ---@param mode string
 ---@return boolean
 local function is_insert_mode(mode)
@@ -774,8 +780,7 @@ end
 
 function M.handle_trigger_key(buf, win)
   if vim.fn.pumvisible() == 1 then
-    local rhs = vim.api.nvim_replace_termcodes("<C-n>", true, false, true)
-    vim.api.nvim_feedkeys(rhs, "in", false)
+    feed_insert_keys("<C-n>")
     return
   end
 
@@ -814,11 +819,31 @@ function M.cancel_auto_complete()
   state.auto_request_generation = state.auto_request_generation + 1
 end
 
+function M.select_next()
+  if vim.fn.pumvisible() == 1 then
+    feed_insert_keys("<C-n>")
+    return true
+  end
+
+  return false
+end
+
 function M.select_prev()
   if vim.fn.pumvisible() == 1 then
-    local rhs = vim.api.nvim_replace_termcodes("<C-p>", true, false, true)
-    vim.api.nvim_feedkeys(rhs, "in", false)
+    feed_insert_keys("<C-p>")
+    return true
   end
+
+  return false
+end
+
+function M.confirm()
+  if vim.fn.pumvisible() == 1 then
+    feed_insert_keys("<C-y>")
+    return true
+  end
+
+  return false
 end
 
 return M
