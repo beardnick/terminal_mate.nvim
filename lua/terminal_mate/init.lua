@@ -134,6 +134,12 @@ local clear_input_autosuggestion
 local render_input_autosuggestion
 local setup_input_buffer_autocmds
 
+---@param keys string
+local function feed_insert_keys(keys)
+  local rhs = vim.api.nvim_replace_termcodes(keys, true, false, true)
+  vim.api.nvim_feedkeys(rhs, "in", false)
+end
+
 ---@param text string
 ---@param width number
 ---@return string
@@ -502,6 +508,87 @@ local function set_buffer_text(buf, text)
   local lines = split_buffer_text(text)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   return lines
+end
+
+---@param buf number
+---@param win number
+local function refresh_input_buffer_state(buf, win)
+  render_input_autosuggestion(buf, win)
+
+  if not config.options.completion.enabled then
+    return
+  end
+
+  if config.options.completion.trigger == "auto" then
+    zsh_completion.schedule_auto_complete(buf, win)
+  else
+    if vim.fn.pumvisible() == 1 then
+      feed_insert_keys("<C-e>")
+    end
+    zsh_completion.cancel_auto_complete()
+  end
+end
+
+---@param buf number
+---@param win number
+---@return table|nil
+local function current_input_line_context(buf, win)
+  if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+
+  if vim.api.nvim_win_get_buf(win) ~= buf then
+    return nil
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local row = cursor[1] - 1
+  local col = cursor[2]
+  local line = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1] or ""
+
+  return {
+    row = row,
+    line_nr = cursor[1],
+    col = col,
+    line = line,
+  }
+end
+
+---@param line string
+---@param col number
+---@return number
+local function previous_shell_word_col(line, col)
+  local prefix = line:sub(1, col)
+  local trimmed = prefix:gsub("%s+$", "")
+  local without_word = trimmed:gsub("%S+$", "")
+  return #without_word
+end
+
+---@param line string
+---@param col number
+---@return number
+local function next_shell_word_col(line, col)
+  local suffix = line:sub(col + 1)
+  local spaces = suffix:match("^%s*") or ""
+  local word = suffix:sub(#spaces + 1):match("^%S*") or ""
+  return col + #spaces + #word
+end
+
+---@param buf number
+---@param win number
+---@param start_col number
+---@param end_col number
+---@param replacement string
+local function replace_input_range(buf, win, start_col, end_col, replacement)
+  local ctx = current_input_line_context(buf, win)
+  if not ctx then
+    return
+  end
+
+  vim.api.nvim_buf_set_text(buf, ctx.row, start_col, ctx.row, end_col, { replacement })
+  vim.api.nvim_win_set_cursor(win, { ctx.line_nr, start_col + #replacement })
+  state.history_index = 0
+  refresh_input_buffer_state(buf, win)
 end
 
 ---@param win number
@@ -2195,6 +2282,17 @@ end
 function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
+  local function with_input_context(callback)
+    return function()
+      local win = vim.api.nvim_get_current_win()
+      local ctx = current_input_line_context(buf, win)
+      if not ctx then
+        return
+      end
+
+      callback(win, ctx)
+    end
+  end
 
   vim.keymap.set("n", keymap.send_line, function()
     M.send_buffer()
@@ -2213,6 +2311,63 @@ function M._setup_buffer_keymaps(buf)
     M.send_buffer()
     vim.cmd("startinsert!")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
+
+  vim.keymap.set("i", "<C-a>", with_input_context(function(win, ctx)
+    vim.api.nvim_win_set_cursor(win, { ctx.line_nr, 0 })
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Move to line start" }))
+
+  vim.keymap.set("i", "<C-e>", with_input_context(function(win, ctx)
+    vim.api.nvim_win_set_cursor(win, { ctx.line_nr, #ctx.line })
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Move to line end" }))
+
+  vim.keymap.set("i", "<C-b>", function()
+    feed_insert_keys("<Left>")
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Move left" }))
+
+  vim.keymap.set("i", "<C-f>", function()
+    feed_insert_keys("<Right>")
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Move right" }))
+
+  vim.keymap.set("i", "<M-b>", with_input_context(function(win, ctx)
+    vim.api.nvim_win_set_cursor(win, { ctx.line_nr, previous_shell_word_col(ctx.line, ctx.col) })
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Backward word" }))
+
+  vim.keymap.set("i", "<M-f>", with_input_context(function(win, ctx)
+    vim.api.nvim_win_set_cursor(win, { ctx.line_nr, next_shell_word_col(ctx.line, ctx.col) })
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Forward word" }))
+
+  vim.keymap.set("i", "<C-u>", with_input_context(function(win, ctx)
+    if ctx.col == 0 then
+      return
+    end
+
+    replace_input_range(buf, win, 0, ctx.col, "")
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Delete to line start" }))
+
+  vim.keymap.set("i", "<C-k>", with_input_context(function(win, ctx)
+    if ctx.col >= #ctx.line then
+      return
+    end
+
+    replace_input_range(buf, win, ctx.col, #ctx.line, "")
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Delete to line end" }))
+
+  vim.keymap.set("i", "<C-w>", with_input_context(function(win, ctx)
+    local start_col = previous_shell_word_col(ctx.line, ctx.col)
+    if start_col == ctx.col then
+      return
+    end
+
+    replace_input_range(buf, win, start_col, ctx.col, "")
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Delete previous word" }))
+
+  vim.keymap.set("i", "<C-d>", with_input_context(function(win, ctx)
+    if ctx.col >= #ctx.line then
+      return
+    end
+
+    replace_input_range(buf, win, ctx.col, ctx.col + 1, "")
+  end), vim.tbl_extend("force", opts, { desc = "TerminalMate: Delete character" }))
 
   vim.keymap.set("n", keymap.new_terminal, function()
     M.new_terminal()
@@ -2265,8 +2420,7 @@ function M._setup_buffer_keymaps(buf)
         return
       end
 
-      local rhs = vim.api.nvim_replace_termcodes(keymap.accept_suggestion, true, false, true)
-      vim.api.nvim_feedkeys(rhs, "in", false)
+      feed_insert_keys(keymap.accept_suggestion)
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Accept autosuggestion" }))
   end
 
@@ -2284,8 +2438,7 @@ function M._setup_buffer_keymaps(buf)
         return
       end
 
-      local rhs = vim.api.nvim_replace_termcodes("<CR>", true, false, true)
-      vim.api.nvim_feedkeys(rhs, "in", false)
+      feed_insert_keys("<CR>")
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Confirm shell completion" }))
   end
 

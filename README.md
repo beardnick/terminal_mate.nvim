@@ -51,8 +51,9 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 9. Press `<Right>` to accept the current history suggestion; zsh-backed completion opens automatically as you type and refreshes after edits like backspace.
 10. Use `<Tab>` / `<S-Tab>` or `<Up>` / `<Down>` to move through the completion menu when it is visible; press `<Enter>` to confirm the current item.
 11. Switch to `completion.trigger = "tab"` if you prefer manual completion.
-12. Press `Ctrl+S` to send the buffer to the latest active terminal.
-13. The buffer is cleared and you stay ready for the next command.
+12. Common insert-mode editing keys follow command-line habits such as `<C-a>`, `<C-e>`, `<C-w>`, `<C-u>`, `<C-k>`, and `<M-b>` / `<M-f>`.
+13. Press `Ctrl+S` to send the buffer to the latest active terminal.
+14. The buffer is cleared and you stay ready for the next command.
 
 ### Managing Multiple Terminals
 
@@ -125,6 +126,16 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<leader>th` | Normal | Hide the current terminal pane |
 | `<Up>` | Normal / Insert | Previous command from history / previous completion item |
 | `<Down>` | Normal / Insert | Next command from history / next completion item |
+| `<C-a>` | Insert | Move to start of current line |
+| `<C-e>` | Insert | Move to end of current line |
+| `<C-b>` | Insert | Move left |
+| `<C-f>` | Insert | Move right |
+| `<M-b>` | Insert | Move backward by shell word |
+| `<M-f>` | Insert | Move forward by shell word |
+| `<C-w>` | Insert | Delete previous shell word |
+| `<C-u>` | Insert | Delete to start of current line |
+| `<C-k>` | Insert | Delete to end of current line |
+| `<C-d>` | Insert | Delete character under cursor |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
 | `<Right>` | Insert | Accept the current autosuggestion |
 | `<CR>` | Insert | Confirm current completion item / insert newline |
