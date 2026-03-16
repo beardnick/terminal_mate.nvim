@@ -197,6 +197,40 @@ end
 ---@field filter_query string
 ---@field preserve_input boolean
 
+---@param query string
+---@return string
+local function completion_filter_query(query)
+  local segment = query:match(".*/([^/]*)$")
+  if segment ~= nil then
+    return segment
+  end
+
+  return query
+end
+
+---@param line string
+---@param cursor_col number
+---@param query string
+---@param items table[]
+---@return number
+local function completion_replace_start(line, cursor_col, query, items)
+  local token_start = find_token_start(line, cursor_col)
+  local slash_offset = query:match("^.*()/")
+  if not slash_offset then
+    return token_start
+  end
+
+  local path_prefix = query:sub(1, slash_offset)
+  for _, item in ipairs(items) do
+    local word = item.word or ""
+    if word:sub(1, #path_prefix) == path_prefix then
+      return token_start
+    end
+  end
+
+  return token_start + slash_offset
+end
+
 ---@param line string
 ---@param cursor_col number
 ---@return TerminalMateCompletionRequest
@@ -205,7 +239,7 @@ local function build_completion_request(line, cursor_col)
   local request = {
     request_line = line,
     request_cursor_col = cursor_col,
-    filter_query = query,
+    filter_query = completion_filter_query(query),
     preserve_input = false,
   }
 
@@ -771,7 +805,12 @@ function M.complete_at_cursor(buf, win, opts)
         return
       end
 
-      local start_col = find_token_start(updated_line, updated_cursor)
+      local start_col = completion_replace_start(
+        updated_line,
+        updated_cursor,
+        current_completion_query(updated_line, updated_cursor),
+        items
+      )
       vim.fn.complete(start_col, items)
       finish()
     end)
