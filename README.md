@@ -82,6 +82,8 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 - Completion suggestions open automatically inside the TerminalMate input buffer as you type.
 - Backspacing or other in-buffer edits refresh the completion candidates after a short debounce.
+- Completion follows the current working directory of the active TerminalMate shell, so `cd` in the terminal updates later path suggestions.
+- In tmux mode, completion prefers the pane currently adjacent to Neovim, so switching terminal panes updates later path suggestions too.
 - TerminalMate reuses your normal zsh completion setup, including `compinit`, `compdef`, git completion, and any `bashcompinit` / `complete` configuration loaded from your shell startup files.
 - Directory and file completion work the same way as your regular zsh prompt, so commands like `cd`, `ls`, script paths, and redirects complete naturally.
 - Partial option queries widen the shell lookup before filtering, so inputs like `curl -d` can still surface both `-d` and `--data`.

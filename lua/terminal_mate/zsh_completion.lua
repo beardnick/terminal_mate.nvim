@@ -33,6 +33,7 @@ local state = {
   warned_missing_zsh = false,
   queued_completion = nil,
   auto_request_generation = 0,
+  session_cwd = nil,
 }
 
 local function notify(msg, level)
@@ -109,6 +110,7 @@ local function reset_session()
   state.init_script_path = nil
   state.output = ""
   state.partial = ""
+  state.session_cwd = nil
 
   if state.pending then
     local callback = state.pending.callback
@@ -579,7 +581,11 @@ local function maybe_send_init_script()
   vim.api.nvim_chan_send(state.job_id, ". " .. vim.fn.shellescape(path) .. "\n")
 end
 
-local function handle_stdout(_, data)
+local function handle_stdout(job_id, data)
+  if job_id ~= state.job_id then
+    return
+  end
+
   if not data then
     return
   end
@@ -620,7 +626,20 @@ local function handle_stdout(_, data)
   end
 end
 
-local function start_session()
+local function resolve_session_cwd()
+  if not state.config or type(state.config.cwd_resolver) ~= "function" then
+    return nil
+  end
+
+  local ok, cwd = pcall(state.config.cwd_resolver)
+  if not ok or type(cwd) ~= "string" or cwd == "" then
+    return nil
+  end
+
+  return cwd
+end
+
+local function start_session(cwd)
   local executable = current_shell_executable()
   if not executable then
     if not state.warned_missing_zsh then
@@ -633,9 +652,14 @@ local function start_session()
 
   local job_id = vim.fn.jobstart({ executable, "-i" }, {
     pty = true,
+    cwd = cwd,
     on_stdout = handle_stdout,
     on_stderr = handle_stdout,
-    on_exit = function(_, code)
+    on_exit = function(exited_job_id, code)
+      if exited_job_id ~= state.job_id then
+        return
+      end
+
       local had_waiters = #state.waiters > 0
       reset_session()
       if had_waiters then
@@ -650,11 +674,14 @@ local function start_session()
   end
 
   state.job_id = job_id
+  state.session_cwd = cwd
   vim.defer_fn(maybe_send_init_script, 200)
 end
 
 local function ensure_session(callback)
-  if state.ready and state.job_id then
+  local cwd = resolve_session_cwd()
+
+  if state.ready and state.job_id and state.session_cwd == cwd then
     callback(true)
     return
   end
@@ -662,10 +689,14 @@ local function ensure_session(callback)
   table.insert(state.waiters, callback)
 
   if state.job_id then
-    return
+    if state.session_cwd == cwd then
+      return
+    end
+
+    reset_session()
   end
 
-  start_session()
+  start_session(cwd)
 end
 
 function M.setup(opts)

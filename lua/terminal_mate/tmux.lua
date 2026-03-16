@@ -44,6 +44,22 @@ function M.current_window_id()
   return output
 end
 
+--- Get the current working directory for a pane.
+---@param pane_id string|nil
+---@return string|nil
+function M.current_path(pane_id)
+  if not pane_id or pane_id == "" then
+    return nil
+  end
+
+  local output, code = M.exec({ "display-message", "-p", "-t", pane_id, "#{pane_current_path}" })
+  if code ~= 0 or output == "" then
+    return nil
+  end
+
+  return output
+end
+
 --- List panes in a tmux window with geometry information
 ---@param window_id string|nil
 ---@return table[]

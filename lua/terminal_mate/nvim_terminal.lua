@@ -1,5 +1,6 @@
 --- Neovim built-in terminal backend for terminal_mate.nvim
 local M = {}
+local uv = vim.uv or vim.loop
 
 local FALLBACK_SHELL_CANDIDATES = {
   { source = "fallback:/bin/zsh", raw = "/bin/zsh" },
@@ -577,6 +578,33 @@ function M.send_special_key(terminal, key)
   end
 
   return true, nil
+end
+
+--- Get the current working directory for the shell running inside a managed Neovim terminal.
+---@param terminal table|nil
+---@return string|nil
+function M.current_path(terminal)
+  if not M.is_alive(terminal) or vim.fn.exists("*jobpid") ~= 1 then
+    return nil
+  end
+
+  local ok_pid, pid = pcall(vim.fn.jobpid, terminal.job_id)
+  if not ok_pid or type(pid) ~= "number" or pid <= 0 then
+    return nil
+  end
+
+  local proc_cwd = string.format("/proc/%d/cwd", pid)
+  local resolved = uv and uv.fs_realpath and uv.fs_realpath(proc_cwd) or nil
+  if type(resolved) == "string" and resolved ~= "" then
+    return resolved
+  end
+
+  local link = uv and uv.fs_readlink and uv.fs_readlink(proc_cwd) or nil
+  if type(link) == "string" and link ~= "" then
+    return link
+  end
+
+  return nil
 end
 
 return M

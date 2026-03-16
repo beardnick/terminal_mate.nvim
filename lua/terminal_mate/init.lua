@@ -1189,6 +1189,43 @@ local function ensure_managed_tmux_pane()
   return pane_id
 end
 
+---@return string|nil
+local function resolve_tmux_completion_pane()
+  if not tmux.is_tmux() then
+    return nil
+  end
+
+  local current_pane_id = tmux.current_pane_id()
+  if current_pane_id then
+    state.nvim_pane_id = current_pane_id
+    local adjacent_pane_id = tmux.find_adjacent_pane(current_pane_id)
+    if adjacent_pane_id and tmux.pane_exists(adjacent_pane_id) then
+      return adjacent_pane_id
+    end
+  end
+
+  if has_tmux_terminal() then
+    return state.terminal_pane_id
+  end
+
+  return nil
+end
+
+---@return string|nil
+local function resolve_completion_cwd()
+  local backend = get_active_backend()
+  if backend == "tmux" then
+    return tmux.current_path(resolve_tmux_completion_pane())
+  end
+
+  if backend == "nvim" then
+    local terminal = get_current_nvim_terminal()
+    return nvim_terminal.current_path(terminal)
+  end
+
+  return nil
+end
+
 ---@param terminal table
 ---@return boolean
 show_nvim_terminal = function(terminal)
@@ -2322,7 +2359,9 @@ end
 ---@param opts table|nil
 function M.setup(opts)
   config.setup(opts)
-  zsh_completion.setup(config.options.completion)
+  zsh_completion.setup(vim.tbl_extend("force", {}, config.options.completion, {
+    cwd_resolver = resolve_completion_cwd,
+  }))
   setup_sidebar_highlights()
   setup_autocmds()
 
