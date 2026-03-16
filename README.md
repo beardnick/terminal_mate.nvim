@@ -15,7 +15,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
 - **Zsh-like Autosuggestions**: Show history-backed ghost text in the input buffer and accept it with `<Right>`.
-- **Native Zsh Completion**: Press `<Tab>` in the input buffer to use a real background zsh session for file, directory, branch, option, and command completion.
+- **Native Zsh Completion**: Completion suggestions open automatically in the input buffer through a real background zsh session, with an option to switch back to `<Tab>`-triggered completion.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
 - **tmux Fallback**: When you select the tmux backend, TerminalMate reuses an adjacent tmux pane when possible or creates one above the current pane.
 
@@ -48,8 +48,8 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 6. Click a terminal row or press `Enter` on it to switch to that managed terminal.
 7. Type your command(s) in the input buffer.
 8. Matching history entries appear as ghost text at the cursor, similar to zsh autosuggestions.
-9. Press `<Right>` to accept the current history suggestion, or `<Tab>` to ask zsh for native shell completion.
-10. Use `<S-Tab>` to move backward in the completion menu when it is visible.
+9. Press `<Right>` to accept the current history suggestion; zsh-backed completion opens automatically as you type and refreshes after edits like backspace.
+10. Use `<Tab>` / `<S-Tab>` to move through the completion menu when it is visible, or switch to `completion.trigger = "tab"` if you prefer manual completion.
 11. Press `Ctrl+S` to send the buffer to the latest active terminal.
 12. The buffer is cleared and you stay ready for the next command.
 
@@ -79,11 +79,13 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 ### Native Zsh Completion
 
-- Press `<Tab>` inside the TerminalMate input buffer to trigger fuzzy-ranked completion through an interactive `zsh` session.
+- Completion suggestions open automatically inside the TerminalMate input buffer as you type.
+- Backspacing or other in-buffer edits refresh the completion candidates after a short debounce.
 - TerminalMate reuses your normal zsh completion setup, including `compinit`, `compdef`, git completion, and any `bashcompinit` / `complete` configuration loaded from your shell startup files.
 - Directory and file completion work the same way as your regular zsh prompt, so commands like `cd`, `ls`, script paths, and redirects complete naturally.
 - Partial option queries widen the shell lookup before filtering, so inputs like `curl -d` can still surface both `-d` and `--data`.
 - When multiple matches are available, the first candidate is preselected so you can tab through results immediately.
+- Set `completion.trigger = "tab"` if you prefer to open completion manually with the configured trigger key.
 - `<S-Tab>` moves backward through the popup menu when multiple matches are available.
 
 ## Commands
@@ -121,7 +123,7 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<Down>` | Normal / Insert | Next command from history |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
 | `<Right>` | Insert | Accept the current autosuggestion |
-| `<Tab>` | Insert | Trigger fuzzy zsh completion / move to next item |
+| `<Tab>` | Insert | Move to next completion item / trigger completion when `completion.trigger = "tab"` |
 | `<S-Tab>` | Insert | Move to previous completion item |
 | `<C-l>` | Normal | Clear the terminal screen |
 | `<C-c>` | Normal | Send interrupt signal (Ctrl-C) |
@@ -179,6 +181,10 @@ require("terminal_mate").setup({
 
   completion = {
     enabled = true,
+    -- "auto" = open completion as you type, "tab" = trigger with keymap.completion_trigger.
+    trigger = "auto",
+    -- Debounce for automatic completion refreshes, including backspace updates.
+    debounce_ms = 120,
     -- nil = use $SHELL when it is zsh, otherwise fall back to `zsh`.
     shell = nil,
   },

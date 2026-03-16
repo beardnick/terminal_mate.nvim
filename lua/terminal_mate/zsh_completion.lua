@@ -31,6 +31,8 @@ local state = {
   partial = "",
   pending = nil,
   warned_missing_zsh = false,
+  queued_completion = nil,
+  auto_request_generation = 0,
 }
 
 local function notify(msg, level)
@@ -391,6 +393,72 @@ local function insert_literal_tab(buf, win)
   vim.api.nvim_win_set_cursor(win, { cursor[1], col + 1 })
 end
 
+local function close_completion_menu()
+  if vim.fn.pumvisible() ~= 1 then
+    return
+  end
+
+  local rhs = vim.api.nvim_replace_termcodes("<C-e>", true, false, true)
+  vim.api.nvim_feedkeys(rhs, "in", false)
+end
+
+---@param mode string
+---@return boolean
+local function is_insert_mode(mode)
+  return mode == "i" or mode == "ic" or mode == "ix"
+end
+
+---@param buf number
+---@param win number
+---@return table|nil
+local function current_completion_context(buf, win)
+  if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+
+  if vim.api.nvim_win_get_buf(win) ~= buf then
+    return nil
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local line_nr = cursor[1]
+  local cursor_col = cursor[2]
+  local line = vim.api.nvim_buf_get_lines(buf, line_nr - 1, line_nr, false)[1] or ""
+
+  return {
+    line_nr = line_nr,
+    cursor_col = cursor_col,
+    line = line,
+  }
+end
+
+---@param ctx table
+---@return boolean
+local function has_auto_completion_context(ctx)
+  return ctx.line:sub(1, ctx.cursor_col):match("%S") ~= nil
+end
+
+---@param opts table|nil
+---@return table
+local function normalize_complete_options(opts)
+  return vim.tbl_extend("force", {
+    allow_select_next = true,
+    insert_tab_on_empty = true,
+    preserve_input = false,
+    auto = false,
+  }, opts or {})
+end
+
+local function process_queued_completion()
+  if state.pending or not state.queued_completion then
+    return
+  end
+
+  local queued = state.queued_completion
+  state.queued_completion = nil
+  M.complete_at_cursor(queued.buf, queued.win, queued.opts)
+end
+
 local function complete_pending_request()
   if not state.pending then
     return
@@ -570,6 +638,8 @@ end
 
 function M.stop()
   reset_session()
+  state.queued_completion = nil
+  state.auto_request_generation = state.auto_request_generation + 1
 end
 
 function M.request(line, cursor_col, callback)
@@ -598,33 +668,73 @@ function M.request(line, cursor_col, callback)
   end)
 end
 
-function M.complete_at_cursor(buf, win)
-  if vim.fn.pumvisible() == 1 then
+function M.complete_at_cursor(buf, win, opts)
+  local options = normalize_complete_options(opts)
+
+  if options.allow_select_next and vim.fn.pumvisible() == 1 then
     local rhs = vim.api.nvim_replace_termcodes("<C-n>", true, false, true)
     vim.api.nvim_feedkeys(rhs, "in", false)
     return
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(win)
-  local line_nr = cursor[1]
-  local cursor_col = cursor[2]
-  local line = vim.api.nvim_buf_get_lines(buf, line_nr - 1, line_nr, false)[1] or ""
+  local ctx = current_completion_context(buf, win)
+  if not ctx then
+    return
+  end
+
+  if options.auto and not is_insert_mode(vim.api.nvim_get_mode().mode) then
+    return
+  end
+
+  if options.auto and not has_auto_completion_context(ctx) then
+    close_completion_menu()
+    return
+  end
+
+  if state.pending then
+    state.queued_completion = {
+      buf = buf,
+      win = win,
+      opts = options,
+    }
+    return
+  end
+
+  local line_nr = ctx.line_nr
+  local cursor_col = ctx.cursor_col
+  local line = ctx.line
   local request = build_completion_request(line, cursor_col)
+  if options.preserve_input then
+    request.preserve_input = true
+  end
 
   M.request(request.request_line, request.request_cursor_col, function(result, err)
     vim.schedule(function()
+      local function finish()
+        if state.queued_completion then
+          vim.schedule(process_queued_completion)
+        end
+      end
+
       if err or not result then
-        insert_literal_tab(buf, win)
+        if options.insert_tab_on_empty then
+          insert_literal_tab(buf, win)
+        else
+          close_completion_menu()
+        end
+        finish()
         return
       end
 
       if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then
+        finish()
         return
       end
 
       local current_cursor = vim.api.nvim_win_get_cursor(win)
       local current_line = vim.api.nvim_buf_get_lines(buf, line_nr - 1, line_nr, false)[1] or ""
       if current_cursor[1] ~= line_nr or current_cursor[2] ~= cursor_col or current_line ~= line then
+        finish()
         return
       end
 
@@ -638,21 +748,70 @@ function M.complete_at_cursor(buf, win)
 
       if #result.items == 0 then
         if updated_line == line then
-          insert_literal_tab(buf, win)
+          if options.insert_tab_on_empty then
+            insert_literal_tab(buf, win)
+          else
+            close_completion_menu()
+          end
         end
+        finish()
         return
       end
 
       local items = fuzzy_sort_items(result.items, request.filter_query)
 
       if #items == 1 and updated_line ~= line then
+        finish()
         return
       end
 
       local start_col = find_token_start(updated_line, updated_cursor)
       vim.fn.complete(start_col, items)
+      finish()
     end)
   end)
+end
+
+function M.handle_trigger_key(buf, win)
+  if vim.fn.pumvisible() == 1 then
+    local rhs = vim.api.nvim_replace_termcodes("<C-n>", true, false, true)
+    vim.api.nvim_feedkeys(rhs, "in", false)
+    return
+  end
+
+  if state.config and state.config.trigger == "tab" then
+    M.complete_at_cursor(buf, win)
+    return
+  end
+
+  insert_literal_tab(buf, win)
+end
+
+function M.schedule_auto_complete(buf, win)
+  if not state.config or state.config.trigger ~= "auto" then
+    return
+  end
+
+  state.auto_request_generation = state.auto_request_generation + 1
+  local generation = state.auto_request_generation
+  local delay = math.max(0, math.floor(tonumber(state.config.debounce_ms) or 0))
+
+  vim.defer_fn(function()
+    if generation ~= state.auto_request_generation then
+      return
+    end
+
+    M.complete_at_cursor(buf, win, {
+      allow_select_next = false,
+      insert_tab_on_empty = false,
+      preserve_input = true,
+      auto = true,
+    })
+  end, delay)
+end
+
+function M.cancel_auto_complete()
+  state.auto_request_generation = state.auto_request_generation + 1
 end
 
 function M.select_prev()

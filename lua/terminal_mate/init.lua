@@ -645,7 +645,7 @@ setup_input_buffer_autocmds = function(buf)
     {
       group = group,
       buffer = buf,
-      callback = function()
+      callback = function(args)
         if not vim.api.nvim_buf_is_valid(buf) then
           return
         end
@@ -653,10 +653,18 @@ setup_input_buffer_autocmds = function(buf)
         local win = vim.api.nvim_get_current_win()
         if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
           clear_input_autosuggestion(buf)
+          zsh_completion.cancel_auto_complete()
           return
         end
 
         render_input_autosuggestion(buf, win)
+
+        if args.event == "TextChangedI"
+          and config.options.completion.enabled
+          and config.options.completion.trigger == "auto"
+        then
+          zsh_completion.schedule_auto_complete(buf, win)
+        end
       end,
     }
   )
@@ -666,6 +674,7 @@ setup_input_buffer_autocmds = function(buf)
     buffer = buf,
     callback = function()
       clear_input_autosuggestion(buf)
+      zsh_completion.cancel_auto_complete()
     end,
   })
 
@@ -2218,7 +2227,7 @@ function M._setup_buffer_keymaps(buf)
 
   if config.options.completion.enabled then
     vim.keymap.set("i", keymap.completion_trigger, function()
-      zsh_completion.complete_at_cursor(buf, vim.api.nvim_get_current_win())
+      zsh_completion.handle_trigger_key(buf, vim.api.nvim_get_current_win())
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Trigger shell completion" }))
 
     vim.keymap.set("i", keymap.completion_prev, function()

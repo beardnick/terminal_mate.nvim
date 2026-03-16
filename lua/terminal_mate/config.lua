@@ -24,7 +24,7 @@
 ---@field history_next string Navigate to next (newer) history entry
 ---@field history_search string Open history search picker
 ---@field accept_suggestion string Accept the current autosuggestion
----@field completion_trigger string Trigger native shell completion in insert mode
+---@field completion_trigger string Trigger native shell completion in tab mode / move to the next completion item
 ---@field completion_prev string Select the previous completion item in insert mode
 
 ---@class TerminalMateBuffer
@@ -33,6 +33,8 @@
 
 ---@class TerminalMateCompletion
 ---@field enabled boolean Enable native zsh completion in the TerminalMate input buffer
+---@field trigger string Completion trigger mode: "auto" or "tab"
+---@field debounce_ms number Delay before refreshing automatic completion suggestions
 ---@field shell string|nil Zsh executable to use for completion (nil = auto-detect)
 
 local M = {}
@@ -46,6 +48,8 @@ M.defaults = {
   clear_input = true,
   completion = {
     enabled = true,
+    trigger = "auto",
+    debounce_ms = 120,
     shell = nil,
   },
   keymap = {
@@ -81,6 +85,14 @@ function M.setup(opts)
 
   if not vim.tbl_contains({ "auto", "nvim", "tmux" }, M.options.backend) then
     error("terminal_mate: backend must be one of 'auto', 'nvim', or 'tmux'")
+  end
+
+  if not vim.tbl_contains({ "auto", "tab" }, M.options.completion.trigger) then
+    error("terminal_mate: completion.trigger must be 'auto' or 'tab'")
+  end
+
+  if type(M.options.completion.debounce_ms) ~= "number" or M.options.completion.debounce_ms < 0 then
+    error("terminal_mate: completion.debounce_ms must be a non-negative number")
   end
 end
 
