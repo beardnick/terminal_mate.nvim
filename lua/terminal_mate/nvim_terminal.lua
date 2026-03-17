@@ -28,10 +28,31 @@ end
 ---@param terminal table|nil
 ---@return boolean
 function M.is_alive(terminal)
+  local job_id = nil
+  if terminal and terminal.buf and vim.api.nvim_buf_is_valid(terminal.buf) then
+    if vim.fn.exists("*term_getjob") == 1 then
+      local ok_term_job, term_job = pcall(vim.fn.term_getjob, terminal.buf)
+      if ok_term_job and type(term_job) == "number" and term_job > 0 then
+        job_id = term_job
+      end
+    end
+
+    if (not job_id or job_id <= 0) and vim.b[terminal.buf] then
+      local buf_job = vim.b[terminal.buf].terminal_job_id
+      if type(buf_job) == "number" and buf_job > 0 then
+        job_id = buf_job
+      end
+    end
+  end
+
+  if (not job_id or job_id <= 0) and terminal then
+    job_id = terminal.job_id
+  end
+
   return terminal ~= nil
     and terminal.buf ~= nil
     and vim.api.nvim_buf_is_valid(terminal.buf)
-    and job_is_running(terminal.job_id)
+    and job_is_running(job_id)
 end
 
 ---@param terminal table
@@ -584,11 +605,34 @@ end
 ---@param terminal table|nil
 ---@return string|nil
 function M.current_path(terminal)
-  if not M.is_alive(terminal) or vim.fn.exists("*jobpid") ~= 1 then
+  if not terminal or not terminal.buf or not vim.api.nvim_buf_is_valid(terminal.buf) or vim.fn.exists("*jobpid") ~= 1 then
     return nil
   end
 
-  local ok_pid, pid = pcall(vim.fn.jobpid, terminal.job_id)
+  local job_id = nil
+  if vim.fn.exists("*term_getjob") == 1 then
+    local ok_term_job, term_job = pcall(vim.fn.term_getjob, terminal.buf)
+    if ok_term_job and type(term_job) == "number" and term_job > 0 then
+      job_id = term_job
+    end
+  end
+
+  if (not job_id or job_id <= 0) and vim.b[terminal.buf] then
+    local buf_job = vim.b[terminal.buf].terminal_job_id
+    if type(buf_job) == "number" and buf_job > 0 then
+      job_id = buf_job
+    end
+  end
+
+  if (not job_id or job_id <= 0) and terminal.job_id and terminal.job_id > 0 then
+    job_id = terminal.job_id
+  end
+
+  if type(job_id) ~= "number" or job_id <= 0 or not job_is_running(job_id) then
+    return nil
+  end
+
+  local ok_pid, pid = pcall(vim.fn.jobpid, job_id)
   if not ok_pid or type(pid) ~= "number" or pid <= 0 then
     return nil
   end
