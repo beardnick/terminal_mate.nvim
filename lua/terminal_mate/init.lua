@@ -2390,9 +2390,7 @@ function M._setup_buffer_keymaps(buf)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send visual selection" }))
 
   vim.keymap.set("i", keymap.send_line, function()
-    vim.cmd("stopinsert")
     M.send_buffer()
-    vim.cmd("startinsert!")
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
 
   vim.keymap.set("i", "<C-a>", with_input_context(function(win, ctx)
