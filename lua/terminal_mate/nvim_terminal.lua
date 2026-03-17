@@ -604,6 +604,26 @@ function M.current_path(terminal)
     return link
   end
 
+  if vim.fn.executable("readlink") == 1 then
+    local output = vim.fn.system({ "readlink", "-f", proc_cwd })
+    if vim.v.shell_error == 0 then
+      output = vim.trim(output)
+      if output ~= "" then
+        return output
+      end
+    end
+  end
+
+  if vim.fn.executable("pwdx") == 1 then
+    local output = vim.fn.system({ "pwdx", tostring(pid) })
+    if vim.v.shell_error == 0 then
+      local cwd = output:match("^%s*%d+:%s*(.-)%s*$")
+      if cwd and cwd ~= "" then
+        return cwd
+      end
+    end
+  end
+
   return nil
 end
 
