@@ -1300,14 +1300,35 @@ end
 
 ---@return string|nil
 local function resolve_completion_cwd()
-  local backend = get_active_backend()
-  if backend == "tmux" then
-    return tmux.current_path(resolve_tmux_completion_pane())
+  local visible_terminal = get_visible_nvim_terminal()
+  if visible_terminal then
+    local cwd = nvim_terminal.current_path(visible_terminal)
+    if cwd then
+      return cwd
+    end
   end
 
-  if backend == "nvim" then
-    local terminal = get_current_nvim_terminal()
-    return nvim_terminal.current_path(terminal)
+  local active_backend = get_active_backend()
+  if active_backend == "tmux" then
+    local cwd = tmux.current_path(resolve_tmux_completion_pane())
+    if cwd then
+      return cwd
+    end
+  end
+
+  local current_terminal = get_current_nvim_terminal()
+  if current_terminal then
+    local cwd = nvim_terminal.current_path(current_terminal)
+    if cwd then
+      return cwd
+    end
+  end
+
+  if active_backend ~= "nvim" then
+    local cwd = tmux.current_path(resolve_tmux_completion_pane())
+    if cwd then
+      return cwd
+    end
   end
 
   return nil
@@ -1712,6 +1733,10 @@ function M.open()
   vim.api.nvim_set_current_buf(buf)
   M._setup_buffer_keymaps(buf)
 
+  if config.options.completion.enabled then
+    zsh_completion.prime()
+  end
+
   apply_input_window_options(vim.api.nvim_get_current_win())
   render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
@@ -1763,6 +1788,10 @@ function M.new_terminal()
   local buf = get_or_create_input_buf()
   vim.api.nvim_set_current_buf(buf)
   M._setup_buffer_keymaps(buf)
+
+  if config.options.completion.enabled then
+    zsh_completion.prime()
+  end
 
   apply_input_window_options(vim.api.nvim_get_current_win())
   render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
