@@ -74,3 +74,7 @@ end, { desc = "Previous history entry" })
 vim.api.nvim_create_user_command("TerminalMateHistoryNext", function()
   require("terminal_mate").history_next()
 end, { desc = "Next history entry" })
+
+vim.api.nvim_create_user_command("TerminalMateDebugCompletion", function()
+  require("terminal_mate").debug_completion_context()
+end, { desc = "Show completion backend/cwd debug information" })

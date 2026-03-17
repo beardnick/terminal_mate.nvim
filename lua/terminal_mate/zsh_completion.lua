@@ -889,6 +889,17 @@ function M.cancel_auto_complete()
   state.auto_request_generation = state.auto_request_generation + 1
 end
 
+---@return table
+function M.get_debug_state()
+  return {
+    job_id = state.job_id,
+    ready = state.ready,
+    pending = state.pending ~= nil,
+    session_cwd = state.session_cwd,
+    queued_completion = state.queued_completion ~= nil,
+  }
+end
+
 function M.select_next()
   if vim.fn.pumvisible() == 1 then
     feed_insert_keys("<C-n>")

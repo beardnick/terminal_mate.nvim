@@ -1298,21 +1298,33 @@ local function resolve_tmux_completion_pane()
   return nil
 end
 
----@return string|nil
-local function resolve_completion_cwd()
+---@return table
+local function collect_completion_context()
   local visible_terminal = get_visible_nvim_terminal()
   if visible_terminal then
     local cwd = nvim_terminal.current_path(visible_terminal)
     if cwd then
-      return cwd
+      return {
+        backend = "nvim",
+        source = "visible_nvim_terminal",
+        cwd = cwd,
+        terminal_id = visible_terminal.id,
+        terminal_buf = visible_terminal.buf,
+      }
     end
   end
 
   local active_backend = get_active_backend()
   if active_backend == "tmux" then
-    local cwd = tmux.current_path(resolve_tmux_completion_pane())
+    local pane_id = resolve_tmux_completion_pane()
+    local cwd = tmux.current_path(pane_id)
     if cwd then
-      return cwd
+      return {
+        backend = "tmux",
+        source = "active_tmux_pane",
+        cwd = cwd,
+        pane_id = pane_id,
+      }
     end
   end
 
@@ -1320,18 +1332,39 @@ local function resolve_completion_cwd()
   if current_terminal then
     local cwd = nvim_terminal.current_path(current_terminal)
     if cwd then
-      return cwd
+      return {
+        backend = "nvim",
+        source = "current_nvim_terminal",
+        cwd = cwd,
+        terminal_id = current_terminal.id,
+        terminal_buf = current_terminal.buf,
+      }
     end
   end
 
   if active_backend ~= "nvim" then
-    local cwd = tmux.current_path(resolve_tmux_completion_pane())
+    local pane_id = resolve_tmux_completion_pane()
+    local cwd = tmux.current_path(pane_id)
     if cwd then
-      return cwd
+      return {
+        backend = "tmux",
+        source = "fallback_tmux_pane",
+        cwd = cwd,
+        pane_id = pane_id,
+      }
     end
   end
 
-  return nil
+  return {
+    backend = active_backend,
+    source = "none",
+    cwd = nil,
+  }
+end
+
+---@return string|nil
+local function resolve_completion_cwd()
+  return collect_completion_context().cwd
 end
 
 ---@param terminal table
@@ -2304,6 +2337,27 @@ function M.get_state()
     nvim_pane_id = state.nvim_pane_id,
     history_count = #state.history,
   }
+end
+
+---@return table
+function M.get_completion_debug_state()
+  local context = collect_completion_context()
+  local completion_state = zsh_completion.get_debug_state()
+  return {
+    active_backend = get_active_backend(),
+    state_backend = state.backend,
+    input_buf = state.input_buf,
+    visible_nvim_terminal_id = (get_visible_nvim_terminal() or {}).id,
+    current_nvim_terminal_id = (get_current_nvim_terminal() or {}).id,
+    managed_tmux_pane = state.terminal_pane_id,
+    nvim_pane_id = state.nvim_pane_id,
+    completion_context = context,
+    completion_session = completion_state,
+  }
+end
+
+function M.debug_completion_context()
+  notify(vim.inspect(M.get_completion_debug_state()))
 end
 
 --- Set up buffer-local keymaps for the input buffer
