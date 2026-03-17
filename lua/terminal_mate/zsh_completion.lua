@@ -679,9 +679,7 @@ local function start_session(cwd)
 end
 
 local function ensure_session(callback)
-  local cwd = resolve_session_cwd()
-
-  if state.ready and state.job_id and state.session_cwd == cwd then
+  if state.ready and state.job_id then
     callback(true)
     return
   end
@@ -689,14 +687,10 @@ local function ensure_session(callback)
   table.insert(state.waiters, callback)
 
   if state.job_id then
-    if state.session_cwd == cwd then
-      return
-    end
-
-    reset_session()
+    return
   end
 
-  start_session(cwd)
+  start_session(resolve_session_cwd())
 end
 
 function M.setup(opts)
@@ -734,6 +728,12 @@ function M.request(line, cursor_col, callback)
       keys = keys .. string.rep("\27[D", left_moves)
     end
     keys = keys .. "\t\024"
+
+    local cwd = resolve_session_cwd()
+    if cwd then
+      state.session_cwd = cwd
+      keys = "builtin cd -- " .. vim.fn.shellescape(cwd) .. "\n" .. keys
+    end
 
     vim.api.nvim_chan_send(state.job_id, keys)
   end)
