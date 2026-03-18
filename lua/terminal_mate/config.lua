@@ -5,6 +5,7 @@
 ---@field close_on_exit boolean Close terminal pane when nvim exits
 ---@field auto_scroll boolean Auto scroll terminal pane to bottom after sending
 ---@field clear_input boolean Clear the input buffer after sending
+---@field shell_integration TerminalMateShellIntegration
 ---@field keymap TerminalMateKeymap
 ---@field buffer TerminalMateBuffer
 ---@field completion TerminalMateCompletion
@@ -37,6 +38,9 @@
 ---@field debounce_ms number Delay before refreshing automatic completion suggestions
 ---@field shell string|nil Zsh executable to use for completion (nil = auto-detect)
 
+---@class TerminalMateShellIntegration
+---@field enabled boolean Enable shell integration for TerminalMate-managed Neovim terminals when supported
+
 local M = {}
 
 M.defaults = {
@@ -46,6 +50,9 @@ M.defaults = {
   close_on_exit = true,
   auto_scroll = true,
   clear_input = true,
+  shell_integration = {
+    enabled = true,
+  },
   completion = {
     enabled = true,
     trigger = "auto",
@@ -93,6 +100,10 @@ function M.setup(opts)
 
   if type(M.options.completion.debounce_ms) ~= "number" or M.options.completion.debounce_ms < 0 then
     error("terminal_mate: completion.debounce_ms must be a non-negative number")
+  end
+
+  if type(M.options.shell_integration.enabled) ~= "boolean" then
+    error("terminal_mate: shell_integration.enabled must be a boolean")
   end
 end
 

@@ -930,6 +930,22 @@ local function find_nvim_terminal(terminal_id)
   return nil
 end
 
+---@param buf number|nil
+---@return table|nil
+local function find_nvim_terminal_by_buf(buf)
+  if not buf then
+    return nil
+  end
+
+  for _, terminal in ipairs(state.nvim_terminals) do
+    if terminal.buf == buf then
+      return terminal
+    end
+  end
+
+  return nil
+end
+
 local function remove_nvim_terminal(terminal_id)
   for index, terminal in ipairs(state.nvim_terminals) do
     if terminal.id == terminal_id then
@@ -1302,12 +1318,12 @@ end
 local function collect_completion_context()
   local visible_terminal = get_visible_nvim_terminal()
   if visible_terminal then
-    local cwd = nvim_terminal.current_path(visible_terminal)
-    if cwd then
+    local path_ctx = nvim_terminal.current_path_context(visible_terminal)
+    if path_ctx.cwd then
       return {
         backend = "nvim",
-        source = "visible_nvim_terminal",
-        cwd = cwd,
+        source = "visible_nvim_terminal:" .. path_ctx.source,
+        cwd = path_ctx.cwd,
         terminal_id = visible_terminal.id,
         terminal_buf = visible_terminal.buf,
       }
@@ -1330,12 +1346,12 @@ local function collect_completion_context()
 
   local current_terminal = get_current_nvim_terminal()
   if current_terminal then
-    local cwd = nvim_terminal.current_path(current_terminal)
-    if cwd then
+    local path_ctx = nvim_terminal.current_path_context(current_terminal)
+    if path_ctx.cwd then
       return {
         backend = "nvim",
-        source = "current_nvim_terminal",
-        cwd = cwd,
+        source = "current_nvim_terminal:" .. path_ctx.source,
+        cwd = path_ctx.cwd,
         terminal_id = current_terminal.id,
         terminal_buf = current_terminal.buf,
       }
@@ -1410,6 +1426,7 @@ local function create_nvim_terminal()
   local ok, err = nvim_terminal.create(terminal, {
     split_percent = config.options.split_percent,
     shell = config.options.shell,
+    shell_integration = config.options.shell_integration,
     reuse_win = reuse_win,
   })
   if not ok then
@@ -2343,15 +2360,19 @@ end
 function M.get_completion_debug_state()
   local context = collect_completion_context()
   local completion_state = zsh_completion.get_debug_state()
+  local visible_terminal = get_visible_nvim_terminal()
+  local current_terminal = get_current_nvim_terminal()
   return {
     active_backend = get_active_backend(),
     state_backend = state.backend,
     input_buf = state.input_buf,
-    visible_nvim_terminal_id = (get_visible_nvim_terminal() or {}).id,
-    current_nvim_terminal_id = (get_current_nvim_terminal() or {}).id,
+    visible_nvim_terminal_id = visible_terminal and visible_terminal.id or nil,
+    current_nvim_terminal_id = current_terminal and current_terminal.id or nil,
     managed_tmux_pane = state.terminal_pane_id,
     nvim_pane_id = state.nvim_pane_id,
     completion_context = context,
+    visible_nvim_terminal = nvim_terminal.get_debug_state(visible_terminal),
+    current_nvim_terminal = nvim_terminal.get_debug_state(current_terminal),
     completion_session = completion_state,
   }
 end
@@ -2548,6 +2569,20 @@ local function setup_autocmds()
     end,
   })
 
+  if vim.fn.has("nvim-0.10") == 1 then
+    vim.api.nvim_create_autocmd("TermRequest", {
+      group = group,
+      callback = function(args)
+        local terminal = find_nvim_terminal_by_buf(args.buf)
+        if not terminal then
+          return
+        end
+
+        nvim_terminal.handle_term_request(terminal, args.data)
+      end,
+    })
+  end
+
   vim.api.nvim_create_autocmd("WinClosed", {
     group = group,
     callback = function(args)
@@ -2607,6 +2642,13 @@ function M.setup(opts)
   elseif config.options.backend ~= "tmux" and not nvim_terminal.is_available() and not tmux.is_tmux() then
     notify(
       "No supported terminal backend is available. Install a Neovim build with :terminal support or run inside tmux.",
+      vim.log.levels.WARN
+    )
+  end
+
+  if config.options.shell_integration.enabled and vim.fn.has("nvim-0.10") ~= 1 then
+    notify(
+      "shell_integration requires Neovim 0.10+ and only applies to TerminalMate-managed Neovim terminals.",
       vim.log.levels.WARN
     )
   end

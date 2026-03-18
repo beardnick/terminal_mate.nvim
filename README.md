@@ -16,6 +16,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
 - **Zsh-like Autosuggestions**: Show history-backed ghost text in the input buffer and accept it with `<Right>`.
 - **Native Zsh Completion**: Completion suggestions open automatically in the input buffer through a real background zsh session, with an option to switch back to `<Tab>`-triggered completion.
+- **Zsh Shell Integration**: TerminalMate-managed Neovim terminals load a zsh integration layer that emits `OSC 7` and `OSC 133`, keeping cwd and prompt/command boundaries in sync.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
 - **tmux Fallback**: When you select the tmux backend, TerminalMate reuses an adjacent tmux pane when possible or creates one above the current pane.
 
@@ -24,6 +25,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - [Neovim](https://neovim.io/) >= 0.8
 - [zsh](https://www.zsh.org/) is recommended for native TerminalMate completion inside the input buffer
 - [tmux](https://github.com/tmux/tmux) is optional and only required when using the tmux backend or fallback path
+- Neovim terminal shell integration requires [Neovim](https://neovim.io/) >= 0.10 and currently applies to TerminalMate-managed `zsh` shells on the Neovim backend
 
 ## Installation
 
@@ -83,7 +85,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 - Completion suggestions open automatically inside the TerminalMate input buffer as you type.
 - Backspacing or other in-buffer edits refresh the completion candidates after a short debounce.
-- Completion follows the current working directory of the active TerminalMate shell, so `cd` in the terminal updates later path suggestions.
+- Completion follows the current working directory of the active TerminalMate shell, preferring live zsh shell-integration updates on the Neovim backend and falling back to process cwd detection when needed.
 - In tmux mode, completion prefers the pane currently adjacent to Neovim, so switching terminal panes updates later path suggestions too.
 - TerminalMate reuses your normal zsh completion setup, including `compinit`, `compdef`, git completion, and any `bashcompinit` / `complete` configuration loaded from your shell startup files.
 - Directory and file completion work the same way as your regular zsh prompt, so commands like `cd`, `ls`, script paths, and redirects complete naturally.
@@ -92,6 +94,13 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - Use `<Up>` / `<Down>` or `<Tab>` / `<S-Tab>` to move through the popup menu, and `<Enter>` to accept the current completion.
 - Set `completion.trigger = "tab"` if you prefer to open completion manually with the configured trigger key.
 - `<S-Tab>` moves backward through the popup menu when multiple matches are available.
+
+### Zsh Shell Integration
+
+- TerminalMate-managed Neovim terminals now install a temporary `ZDOTDIR` wrapper for `zsh`, so your normal `~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.zlogin`, and `~/.zlogout` still load before TerminalMate adds its own integration hooks.
+- The integration emits `OSC 7` cwd updates and `OSC 133` prompt/command markers, which lets TerminalMate keep relative-path completion aligned with the real shell and also enables Neovim's native terminal prompt motions such as `[[` and `]]`.
+- This integration is only available on the Neovim backend and requires Neovim 0.10+.
+- Shells started with `zsh -f` or `--no-rcs` skip rc loading, so TerminalMate also skips shell integration in that case.
 
 ## Commands
 
@@ -170,6 +179,10 @@ require("terminal_mate").setup({
   close_on_exit = true,
   -- Clear the input buffer after sending commands.
   clear_input = true,
+  -- Enable zsh shell integration for TerminalMate-managed Neovim terminals.
+  shell_integration = {
+    enabled = true,
+  },
 
   keymap = {
     send_line = "<C-s>",
