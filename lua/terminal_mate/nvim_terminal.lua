@@ -29,7 +29,7 @@ local function runtime_file(...)
 
   local current = source:sub(1, 1) == "@" and source:sub(2) or source
   local lua_dir = vim.fn.fnamemodify(current, ":h")
-  local root = vim.fn.fnamemodify(lua_dir, ":h:h:h")
+  local root = vim.fn.fnamemodify(lua_dir, ":h:h")
   return join_paths(root, ...)
 end
 
