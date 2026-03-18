@@ -1,4 +1,5 @@
 local M = {}
+local uv = vim.uv or vim.loop
 
 local READY_MARKER = "<TM_READY>"
 local FINISH_MARKER = "<TM_WIDGET><finish>"
@@ -35,6 +36,8 @@ local state = {
   auto_request_generation = 0,
   session_cwd = nil,
 }
+
+local resolve_session_cwd
 
 local function notify(msg, level)
   vim.notify("[TerminalMate] " .. msg, level or vim.log.levels.INFO)
@@ -193,11 +196,138 @@ local function current_completion_query(line, cursor_col)
   return line:sub(start_col, cursor_col)
 end
 
+---@param line string
+---@param cursor_col number
+---@param query string
+---@return boolean
+local function is_path_query(line, cursor_col, query)
+  if query == "" then
+    return false
+  end
+
+  if query:match("^%-") then
+    return false
+  end
+
+  if query:find("/", 1, true) or query:match("^[%.~/]") then
+    return true
+  end
+
+  return find_token_start(line, cursor_col) > 1
+end
+
+---@param text string
+---@return string
+local function unescape_path_query(text)
+  return (text:gsub("\\(.)", "%1"))
+end
+
+---@param path string
+---@return string
+local function normalize_fs_path(path)
+  if vim.fs and vim.fs.normalize then
+    return vim.fs.normalize(path)
+  end
+
+  return path
+end
+
+---@param path string
+---@return string
+local function trim_trailing_separator(path)
+  if path == "/" then
+    return path
+  end
+
+  return (path:gsub("/+$", ""))
+end
+
+---@param path string
+---@return string
+local function expand_tilde_prefix(path)
+  local home = vim.env.HOME
+  if type(home) ~= "string" or home == "" then
+    return path
+  end
+
+  if path == "~" then
+    return home
+  end
+
+  if path:sub(1, 2) == "~/" then
+    return home .. path:sub(2)
+  end
+
+  return path
+end
+
+---@param base string
+---@param name string
+---@return string
+local function join_fs_path(base, name)
+  if base == "" or base == "." then
+    return name
+  end
+  if base == "/" then
+    return "/" .. name
+  end
+
+  return trim_trailing_separator(base) .. "/" .. name
+end
+
+---@param text string
+---@return string
+local function shell_escape_path_suffix(text)
+  return (text:gsub("([\\%s\"'`$&;|<>()[%]{}*?!#])", "\\%1"))
+end
+
+---@class TerminalMatePathRequest
+---@field query string
+---@field prefix string
+---@field filter string
+---@field search_dir string
+
+---@param line string
+---@param cursor_col number
+---@param query string
+---@return TerminalMatePathRequest|nil
+local function build_path_request(line, cursor_col, query)
+  if not is_path_query(line, cursor_col, query) then
+    return nil
+  end
+
+  local cwd = resolve_session_cwd()
+  if type(cwd) ~= "string" or cwd == "" then
+    return nil
+  end
+
+  local prefix, filter = query:match("^(.*[/])([^/]*)$")
+  if prefix == nil then
+    prefix = ""
+    filter = query
+  end
+
+  local search_dir = prefix ~= "" and expand_tilde_prefix(unescape_path_query(prefix)) or cwd
+  if search_dir:sub(1, 1) ~= "/" then
+    search_dir = join_fs_path(cwd, search_dir)
+  end
+
+  search_dir = normalize_fs_path(trim_trailing_separator(search_dir))
+
+  return {
+    query = query,
+    prefix = prefix,
+    filter = filter,
+    search_dir = search_dir,
+  }
+end
+
 ---@class TerminalMateCompletionRequest
 ---@field request_line string
 ---@field request_cursor_col number
 ---@field filter_query string
 ---@field preserve_input boolean
+---@field path_request TerminalMatePathRequest|nil
 
 ---@param query string
 ---@return string
@@ -243,6 +373,7 @@ local function build_completion_request(line, cursor_col)
     request_cursor_col = cursor_col,
     filter_query = completion_filter_query(query),
     preserve_input = false,
+    path_request = build_path_request(line, cursor_col, query),
   }
 
   local option_prefix = query:match("^(%-%-?)[%w-]+$")
@@ -365,6 +496,101 @@ local function fuzzy_sort_items(items, query)
   end
 
   return items
+end
+
+---@param path string
+---@return boolean
+local function is_directory(path)
+  if not uv or not uv.fs_stat then
+    return false
+  end
+
+  local stat = uv.fs_stat(path)
+  return stat and stat.type == "directory" or false
+end
+
+---@param path_request TerminalMatePathRequest|nil
+---@return table[]
+local function filesystem_path_items(path_request)
+  if not path_request then
+    return {}
+  end
+
+  if vim.fn.isdirectory(path_request.search_dir) ~= 1 then
+    return {}
+  end
+
+  if not uv or not uv.fs_scandir or not uv.fs_scandir_next then
+    return {}
+  end
+
+  local handle = uv.fs_scandir(path_request.search_dir)
+  if not handle then
+    return {}
+  end
+
+  local include_hidden = path_request.filter:sub(1, 1) == "."
+  local items = {}
+
+  while true do
+    local name, entry_type = uv.fs_scandir_next(handle)
+    if not name then
+      break
+    end
+
+    if not include_hidden and name:sub(1, 1) == "." then
+      goto continue
+    end
+
+    if path_request.filter ~= "" and not fuzzy_match(name, path_request.filter) then
+      goto continue
+    end
+
+    local full_path = join_fs_path(path_request.search_dir, name)
+    local is_dir = entry_type == "directory" or is_directory(full_path)
+    local suffix = shell_escape_path_suffix(name) .. (is_dir and "/" or "")
+    table.insert(items, {
+      word = path_request.prefix .. suffix,
+      abbr = path_request.prefix .. name .. (is_dir and "/" or ""),
+      menu = "[path]",
+      kind = is_dir and "dir" or "file",
+      dup = 1,
+    })
+
+    ::continue::
+  end
+
+  return items
+end
+
+---@param primary table[]
+---@param secondary table[]
+---@return table[]
+local function merge_completion_items(primary, secondary)
+  if #secondary == 0 then
+    return primary
+  end
+
+  local merged = {}
+  local seen = {}
+
+  for _, item in ipairs(primary) do
+    local word = item.word or ""
+    if word ~= "" and not seen[word] then
+      seen[word] = true
+      table.insert(merged, item)
+    end
+  end
+
+  for _, item in ipairs(secondary) do
+    local word = item.word or ""
+    if word ~= "" and not seen[word] then
+      seen[word] = true
+      table.insert(merged, item)
+    end
+  end
+
+  return merged
 end
 
 local function parse_items(output)
@@ -626,7 +852,7 @@ local function handle_stdout(job_id, data)
   end
 end
 
-local function resolve_session_cwd()
+resolve_session_cwd = function()
   if not state.config or type(state.config.cwd_resolver) ~= "function" then
     return nil
   end
@@ -817,7 +1043,10 @@ function M.complete_at_cursor(buf, win, opts)
         vim.api.nvim_win_set_cursor(win, { line_nr, updated_cursor })
       end
 
-      if #result.items == 0 then
+      local path_items = filesystem_path_items(request.path_request)
+      local completion_items = merge_completion_items(result.items, path_items)
+
+      if #completion_items == 0 then
         if updated_line == line then
           if options.insert_tab_on_empty then
             insert_literal_tab(buf, win)
@@ -829,7 +1058,7 @@ function M.complete_at_cursor(buf, win, opts)
         return
       end
 
-      local items = fuzzy_sort_items(result.items, request.filter_query)
+      local items = fuzzy_sort_items(completion_items, request.filter_query)
 
       if #items == 1 and updated_line ~= line then
         finish()
