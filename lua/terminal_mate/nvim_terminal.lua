@@ -39,7 +39,6 @@ end
 
 local function build_zsh_wrapper_lines(filename, include_integration, restore_real_zdotdir)
   local lines = {
-    [[emulate -L zsh]],
     [[typeset -gx _TMATE_WRAPPER_ZDOTDIR="${ZDOTDIR:-}"]],
     [[typeset -gx _TMATE_REAL_ZDOTDIR="${TERMINAL_MATE_ORIG_ZDOTDIR:-$HOME}"]],
     string.format('if [[ -r "${_TMATE_REAL_ZDOTDIR}/%s" ]]; then', filename),
