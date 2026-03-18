@@ -889,6 +889,11 @@ function M.cancel_auto_complete()
   state.auto_request_generation = state.auto_request_generation + 1
 end
 
+function M.dismiss()
+  M.cancel_auto_complete()
+  close_completion_menu()
+end
+
 ---@return table
 function M.get_debug_state()
   return {

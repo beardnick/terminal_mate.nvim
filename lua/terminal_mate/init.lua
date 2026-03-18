@@ -1935,6 +1935,10 @@ function M.send_buffer()
     return
   end
 
+  if config.options.completion.enabled then
+    zsh_completion.dismiss()
+  end
+
   add_to_history(text)
   send_to_terminal(text)
   clear_buffer()
