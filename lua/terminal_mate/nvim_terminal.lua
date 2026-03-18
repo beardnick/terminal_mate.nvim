@@ -37,7 +37,7 @@ local function termrequest_is_available()
   return vim.fn.has("nvim-0.10") == 1
 end
 
-local function build_zsh_wrapper_lines(filename, include_integration)
+local function build_zsh_wrapper_lines(filename, include_integration, restore_real_zdotdir)
   local lines = {
     [[emulate -L zsh]],
     [[typeset -gx _TMATE_WRAPPER_ZDOTDIR="${ZDOTDIR:-}"]],
@@ -45,7 +45,6 @@ local function build_zsh_wrapper_lines(filename, include_integration)
     string.format('if [[ -r "${_TMATE_REAL_ZDOTDIR}/%s" ]]; then', filename),
     [[  export ZDOTDIR="${_TMATE_REAL_ZDOTDIR}"]],
     string.format('  source "${ZDOTDIR}/%s"', filename),
-    [[  export ZDOTDIR="${_TMATE_WRAPPER_ZDOTDIR}"]],
     [[fi]],
   }
 
@@ -53,6 +52,12 @@ local function build_zsh_wrapper_lines(filename, include_integration)
     table.insert(lines, 'if [[ -n "${TERMINAL_MATE_ZSH_INTEGRATION:-}" && -r "${TERMINAL_MATE_ZSH_INTEGRATION}" ]]; then')
     table.insert(lines, [[  source "${TERMINAL_MATE_ZSH_INTEGRATION}"]])
     table.insert(lines, [[fi]])
+  end
+
+  if restore_real_zdotdir then
+    table.insert(lines, [[export ZDOTDIR="${_TMATE_REAL_ZDOTDIR}"]])
+  else
+    table.insert(lines, [[export ZDOTDIR="${_TMATE_WRAPPER_ZDOTDIR}"]])
   end
 
   table.insert(lines, [[unset _TMATE_WRAPPER_ZDOTDIR _TMATE_REAL_ZDOTDIR]])
@@ -81,11 +86,11 @@ local function ensure_zsh_wrapper_dir()
   end
 
   local files = {
-    [".zshenv"] = build_zsh_wrapper_lines(".zshenv", false),
-    [".zprofile"] = build_zsh_wrapper_lines(".zprofile", false),
-    [".zshrc"] = build_zsh_wrapper_lines(".zshrc", true),
-    [".zlogin"] = build_zsh_wrapper_lines(".zlogin", false),
-    [".zlogout"] = build_zsh_wrapper_lines(".zlogout", false),
+    [".zshenv"] = build_zsh_wrapper_lines(".zshenv", false, false),
+    [".zprofile"] = build_zsh_wrapper_lines(".zprofile", false, false),
+    [".zshrc"] = build_zsh_wrapper_lines(".zshrc", true, true),
+    [".zlogin"] = build_zsh_wrapper_lines(".zlogin", false, true),
+    [".zlogout"] = build_zsh_wrapper_lines(".zlogout", false, true),
   }
 
   for filename, lines in pairs(files) do
