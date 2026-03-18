@@ -709,7 +709,12 @@ function M.create(terminal, opts)
 
   for index, candidate in ipairs(shell_candidates) do
     local termopen_opts, integration = shell_integration_opts(candidate, opts)
-    local ok_term, job_result = pcall(vim.fn.termopen, candidate.argv, termopen_opts or {})
+    local ok_term, job_result
+    if termopen_opts and not vim.tbl_isempty(termopen_opts) then
+      ok_term, job_result = pcall(vim.fn.termopen, candidate.argv, termopen_opts)
+    else
+      ok_term, job_result = pcall(vim.fn.termopen, candidate.argv)
+    end
     if not ok_term then
       table.insert(attempts, string.format("%q -> exception (%s)", candidate.command, tostring(job_result)))
     elseif type(job_result) ~= "number" or job_result <= 0 then
