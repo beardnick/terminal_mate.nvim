@@ -198,6 +198,53 @@ end
 
 ---@param line string
 ---@param cursor_col number
+---@return string[]
+local function tokens_before_cursor(line, cursor_col)
+  local tokens = {}
+  local current = {}
+  local escaped = false
+  local single = false
+  local double = false
+
+  local function flush()
+    if #current == 0 then
+      return
+    end
+
+    table.insert(tokens, table.concat(current))
+    current = {}
+  end
+
+  for i = 1, cursor_col do
+    local ch = line:sub(i, i)
+
+    if escaped then
+      table.insert(current, ch)
+      escaped = false
+    elseif ch == "\\" and not single then
+      escaped = true
+      table.insert(current, ch)
+    elseif ch == "'" and not double then
+      single = not single
+      table.insert(current, ch)
+    elseif ch == '"' and not single then
+      double = not double
+      table.insert(current, ch)
+    elseif not single and not double and (ch:match("%s") or ch:match("[|&;(){}]")) then
+      flush()
+    elseif not single and not double and (ch == "=" or ch == ":") then
+      flush()
+    else
+      table.insert(current, ch)
+    end
+  end
+
+  flush()
+  return tokens
+end
+
+---@param line string
+---@param cursor_col number
 ---@param query string
 ---@return boolean
 local function is_path_query(line, cursor_col, query)
@@ -286,12 +333,18 @@ end
 ---@field prefix string
 ---@field filter string
 ---@field search_dir string
+---@field path_only boolean
 
 ---@param line string
 ---@param cursor_col number
 ---@param query string
 ---@return TerminalMatePathRequest|nil
 local function build_path_request(line, cursor_col, query)
+  local tokens = tokens_before_cursor(line, cursor_col)
+  local current_index = #tokens
+  local command = tokens[1] or ""
+  local path_only = current_index == 2 and (command == "cd" or command == "pushd")
+
   if not is_path_query(line, cursor_col, query) then
     return nil
   end
@@ -319,6 +372,7 @@ local function build_path_request(line, cursor_col, query)
     prefix = prefix,
     filter = filter,
     search_dir = search_dir,
+    path_only = path_only,
   }
 end
 
@@ -655,13 +709,18 @@ local function insert_literal_tab(buf, win)
   vim.api.nvim_win_set_cursor(win, { cursor[1], col + 1 })
 end
 
-local function close_completion_menu()
+---@param immediate boolean|nil
+local function close_completion_menu(immediate)
   if vim.fn.pumvisible() ~= 1 then
     return
   end
 
   local rhs = vim.api.nvim_replace_termcodes("<C-e>", true, false, true)
-  vim.api.nvim_feedkeys(rhs, "in", false)
+  if immediate then
+    vim.fn.feedkeys(rhs, "inx")
+  else
+    vim.api.nvim_feedkeys(rhs, "in", false)
+  end
 end
 
 ---@param keys string
@@ -1044,7 +1103,9 @@ function M.complete_at_cursor(buf, win, opts)
       end
 
       local path_items = filesystem_path_items(request.path_request)
-      local completion_items = merge_completion_items(result.items, path_items)
+      local completion_items = request.path_request and request.path_request.path_only
+          and path_items
+        or merge_completion_items(result.items, path_items)
 
       if #completion_items == 0 then
         if updated_line == line then
@@ -1120,7 +1181,7 @@ end
 
 function M.dismiss()
   M.cancel_auto_complete()
-  close_completion_menu()
+  close_completion_menu(true)
 end
 
 ---@return table
