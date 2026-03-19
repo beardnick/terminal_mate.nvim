@@ -2415,6 +2415,18 @@ function M._setup_buffer_keymaps(buf)
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send visual selection" }))
 
   vim.keymap.set("i", keymap.send_line, function()
+    if config.options.completion.enabled and vim.fn.pumvisible() == 1 then
+      local target_buf = buf
+      zsh_completion.dismiss()
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(target_buf) or vim.api.nvim_get_current_buf() ~= target_buf then
+          return
+        end
+        M.send_buffer()
+      end)
+      return
+    end
+
     M.send_buffer()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
 

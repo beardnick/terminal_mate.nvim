@@ -715,6 +715,13 @@ local function close_completion_menu(immediate)
     return
   end
 
+  if immediate then
+    local ok = pcall(vim.api.nvim_select_popupmenu_item, -1, false, true, {})
+    if ok then
+      return
+    end
+  end
+
   local rhs = vim.api.nvim_replace_termcodes("<C-e>", true, false, true)
   if immediate then
     vim.fn.feedkeys(rhs, "inx")
