@@ -1,6 +1,7 @@
 --- terminal_mate.nvim - Warp-like terminal experience for Neovim
 --- Terminal backend defaults to Neovim's built-in terminal and falls back to tmux.
 local config = require("terminal_mate.config")
+local cheatsheets = require("terminal_mate.cheatsheets")
 local nvim_terminal = require("terminal_mate.nvim_terminal")
 local tmux = require("terminal_mate.tmux")
 local zsh_completion = require("terminal_mate.zsh_completion")
@@ -133,9 +134,31 @@ local ensure_history_loaded
 local clear_input_autosuggestion
 local render_input_autosuggestion
 local setup_input_buffer_autocmds
+local feed_insert_keys
+
+local function refresh_completion_state(buf, win)
+  if not config.options.completion.enabled then
+    return
+  end
+
+  if cheatsheets.has_placeholder_context(buf, win) then
+    zsh_completion.cancel_auto_complete()
+    cheatsheets.schedule_completion(buf, win)
+    return
+  end
+
+  if config.options.completion.trigger == "auto" then
+    zsh_completion.schedule_auto_complete(buf, win)
+  else
+    if vim.fn.pumvisible() == 1 then
+      feed_insert_keys("<C-e>")
+    end
+    zsh_completion.cancel_auto_complete()
+  end
+end
 
 ---@param keys string
-local function feed_insert_keys(keys)
+feed_insert_keys = function(keys)
   local rhs = vim.api.nvim_replace_termcodes(keys, true, false, true)
   vim.api.nvim_feedkeys(rhs, "in", false)
 end
@@ -505,6 +528,7 @@ end
 ---@param text string
 ---@return string[]
 local function set_buffer_text(buf, text)
+  cheatsheets.clear_active(buf)
   local lines = split_buffer_text(text)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   return lines
@@ -514,19 +538,8 @@ end
 ---@param win number
 local function refresh_input_buffer_state(buf, win)
   render_input_autosuggestion(buf, win)
-
-  if not config.options.completion.enabled then
-    return
-  end
-
-  if config.options.completion.trigger == "auto" then
-    zsh_completion.schedule_auto_complete(buf, win)
-  else
-    if vim.fn.pumvisible() == 1 then
-      feed_insert_keys("<C-e>")
-    end
-    zsh_completion.cancel_auto_complete()
-  end
+  cheatsheets.refresh(buf, win)
+  refresh_completion_state(buf, win)
 end
 
 ---@param buf number
@@ -745,12 +758,10 @@ setup_input_buffer_autocmds = function(buf)
         end
 
         render_input_autosuggestion(buf, win)
+        cheatsheets.refresh(buf, win)
 
-        if args.event == "TextChangedI"
-          and config.options.completion.enabled
-          and config.options.completion.trigger == "auto"
-        then
-          zsh_completion.schedule_auto_complete(buf, win)
+        if args.event == "TextChangedI" then
+          refresh_completion_state(buf, win)
         end
       end,
     }
@@ -1381,6 +1392,21 @@ end
 ---@return string|nil
 local function resolve_completion_cwd()
   return collect_completion_context().cwd
+end
+
+---@return string
+local function resolve_cheatsheet_shell()
+  local visible_terminal = get_visible_nvim_terminal()
+  if visible_terminal and type(visible_terminal.shell_command) == "string" and visible_terminal.shell_command ~= "" then
+    return visible_terminal.shell_command
+  end
+
+  local current_terminal = get_current_nvim_terminal()
+  if current_terminal and type(current_terminal.shell_command) == "string" and current_terminal.shell_command ~= "" then
+    return current_terminal.shell_command
+  end
+
+  return config.options.shell or vim.env.SHELL or vim.o.shell or "sh"
 end
 
 ---@param terminal table
@@ -2343,6 +2369,24 @@ function M.history_search()
   end, 50)
 end
 
+function M.cheatsheet_search()
+  M.open()
+  local buf = state.input_buf
+  local win = vim.api.nvim_get_current_win()
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  cheatsheets.search(buf, win)
+end
+
+function M.cheatsheet_edit()
+  cheatsheets.edit_file()
+end
+
+function M.cheatsheet_new()
+  cheatsheets.new_entry()
+end
+
 --- Get current state (for statusline integration etc.)
 ---@return table
 function M.get_state()
@@ -2532,6 +2576,15 @@ function M._setup_buffer_keymaps(buf)
     M.history_search()
   end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search history (insert)" }))
 
+  vim.keymap.set("n", keymap.cheatsheet_search, function()
+    M.cheatsheet_search()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search cheatsheets" }))
+
+  vim.keymap.set("i", keymap.cheatsheet_search, function()
+    vim.cmd("stopinsert")
+    M.cheatsheet_search()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Search cheatsheets (insert)" }))
+
   if keymap.accept_suggestion and keymap.accept_suggestion ~= "" then
     vim.keymap.set("i", keymap.accept_suggestion, function()
       if M.accept_suggestion() then
@@ -2544,10 +2597,16 @@ function M._setup_buffer_keymaps(buf)
 
   if config.options.completion.enabled then
     vim.keymap.set("i", keymap.completion_trigger, function()
+      if cheatsheets.jump_next(vim.api.nvim_get_current_win()) then
+        return
+      end
       zsh_completion.handle_trigger_key(buf, vim.api.nvim_get_current_win())
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Trigger shell completion" }))
 
     vim.keymap.set("i", keymap.completion_prev, function()
+      if cheatsheets.jump_prev(vim.api.nvim_get_current_win()) then
+        return
+      end
       zsh_completion.select_prev()
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous shell completion" }))
 
@@ -2647,6 +2706,11 @@ function M.setup(opts)
   zsh_completion.setup(vim.tbl_extend("force", {}, config.options.completion, {
     cwd_resolver = resolve_completion_cwd,
   }))
+  cheatsheets.setup(vim.tbl_extend("force", {}, config.options.cheatsheets, {
+    cwd_resolver = resolve_completion_cwd,
+    shell_resolver = resolve_cheatsheet_shell,
+    notify = notify,
+  }))
   setup_sidebar_highlights()
   setup_autocmds()
 
@@ -2703,6 +2767,18 @@ function M.setup(opts)
       M.send_visual(visual_type)
     end)
   end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Send visual selection to terminal" }))
+
+  vim.keymap.set("n", keymap.cheatsheet_search, function()
+    M.cheatsheet_search()
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Search cheatsheets" }))
+
+  vim.keymap.set("n", keymap.cheatsheet_edit, function()
+    M.cheatsheet_edit()
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Edit cheatsheet file" }))
+
+  vim.keymap.set("n", keymap.cheatsheet_new, function()
+    M.cheatsheet_new()
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Create cheatsheet entry" }))
 end
 
 return M

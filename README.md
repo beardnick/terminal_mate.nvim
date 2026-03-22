@@ -16,6 +16,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
 - **Zsh-like Autosuggestions**: Show history-backed ghost text in the input buffer and accept it with `<Right>`.
 - **Native Zsh Completion**: Completion suggestions open automatically in the input buffer through a real background zsh session, with an option to switch back to `<Tab>`-triggered completion.
+- **Cheatsheet Templates**: Search user-defined command templates by description, expand `{{variables}}` into jumpable placeholders, and drive placeholder values from shell commands or static item lists.
 - **Zsh Shell Integration**: TerminalMate-managed Neovim terminals load a zsh integration layer that emits `OSC 7` and `OSC 133`, keeping cwd and prompt/command boundaries in sync.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
 - **tmux Fallback**: When you select the tmux backend, TerminalMate reuses an adjacent tmux pane when possible or creates one above the current pane.
@@ -54,8 +55,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 10. Use `<Tab>` / `<S-Tab>` or `<Up>` / `<Down>` to move through the completion menu when it is visible; press `<Enter>` to confirm the current item.
 11. Switch to `completion.trigger = "tab"` if you prefer manual completion.
 12. Common insert-mode editing keys follow command-line habits such as `<C-a>`, `<C-e>`, `<C-w>`, `<C-u>`, `<C-k>`, and `<M-b>` / `<M-f>`.
-13. Press `Ctrl+S` to send the buffer to the latest active terminal.
-14. The buffer is cleared and you stay ready for the next command.
+13. Press `Ctrl+G` to search cheatsheets by description, then expand a template into jumpable placeholders inside the input buffer.
+14. Use `<Tab>` / `<S-Tab>` to jump between cheatsheet placeholders when no popup menu is visible.
+15. Press `Ctrl+S` to send the buffer to the latest active terminal.
+16. The buffer is cleared and you stay ready for the next command.
 
 ### Managing Multiple Terminals
 
@@ -96,6 +99,43 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - Set `completion.trigger = "tab"` if you prefer to open completion manually with the configured trigger key.
 - `<S-Tab>` moves backward through the popup menu when multiple matches are available.
 
+### Cheatsheets
+
+- Cheatsheets live in a Lua file that returns a list of entries. By default the file is created at `stdpath("config") .. "/terminal_mate_cheatsheets.lua"`.
+- Search cheatsheets with `:TerminalMateCheatsheetSearch` or the default `Ctrl+G` keymap while you are in the input buffer.
+- Search matches run against each entry's `description`, so descriptions should be written for lookup, not just display.
+- Template variables use `{{name}}` syntax. After a cheatsheet is inserted, `<Tab>` / `<S-Tab>` jump between those variable placeholders.
+- Placeholder completion is fuzzy and local to the active variable. If the variable defines a `command`, TerminalMate runs it in the active shell cwd and fuzzy-filters the resulting lines.
+- `command = "git branch"` is supported; leading `* ` markers from branch output are stripped automatically. Static `items = { ... }` lists also work.
+
+Example cheatsheet file:
+
+```lua
+return {
+  {
+    description = "Checkout a git branch",
+    template = "git checkout {{branch}}",
+    variables = {
+      branch = {
+        command = "git branch --format='%(refname:short)'",
+      },
+    },
+  },
+  {
+    description = "Tail a service log",
+    template = "kubectl logs -f {{pod}} -n {{namespace}}",
+    variables = {
+      pod = {
+        command = "kubectl get pods --no-headers -o custom-columns=':metadata.name'",
+      },
+      namespace = {
+        items = { "default", "kube-system", "prod" },
+      },
+    },
+  },
+}
+```
+
 ### Zsh Shell Integration
 
 - TerminalMate-managed Neovim terminals now install a temporary `ZDOTDIR` wrapper for `zsh`, so your normal `~/.zshenv`, `~/.zprofile`, `~/.zshrc`, `~/.zlogin`, and `~/.zlogout` still load before TerminalMate adds its own integration hooks.
@@ -123,6 +163,9 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 | `:TerminalMateHistorySearch` | Open history search picker |
 | `:TerminalMateHistoryPrev` | Navigate to older history entry |
 | `:TerminalMateHistoryNext` | Navigate to newer history entry |
+| `:TerminalMateCheatsheetSearch` | Search cheatsheets by description |
+| `:TerminalMateCheatsheetEdit` | Edit the cheatsheet file |
+| `:TerminalMateCheatsheetNew` | Create a cheatsheet entry |
 
 ## Default Keymaps
 
@@ -147,10 +190,11 @@ Keymaps active in the `terminal_mate` input buffer:
 | `<C-k>` | Insert | Delete to end of current line |
 | `<C-d>` | Insert | Delete character under cursor |
 | `<C-r>` | Normal / Insert | Search command history (fuzzy picker) |
+| `<C-g>` | Normal / Insert | Search cheatsheets by description |
 | `<Right>` | Insert | Accept the current autosuggestion |
 | `<CR>` | Insert | Confirm current completion item / insert newline |
-| `<Tab>` | Insert | Move to next completion item / trigger completion when `completion.trigger = "tab"` |
-| `<S-Tab>` | Insert | Move to previous completion item |
+| `<Tab>` | Insert | Jump to next cheatsheet placeholder / move to next completion item / trigger completion when `completion.trigger = "tab"` |
+| `<S-Tab>` | Insert | Jump to previous cheatsheet placeholder / move to previous completion item |
 | `<C-l>` | Normal | Clear the terminal screen |
 | `<C-c>` | Normal | Send interrupt signal (Ctrl-C) |
 
@@ -165,6 +209,8 @@ Global keymaps:
 | `<leader>th` | Normal | Hide the current terminal pane |
 | `<leader>tc` | Normal | Close the terminal pane |
 | `<leader>tt` | Normal | Toggle terminal pane visibility (without entering input mode) |
+| `<leader>te` | Normal | Edit the cheatsheet file |
+| `<leader>ta` | Normal | Create a cheatsheet entry |
 
 ## Configuration
 
@@ -199,6 +245,9 @@ require("terminal_mate").setup({
     history_prev = "<Up>",
     history_next = "<Down>",
     history_search = "<C-r>",
+    cheatsheet_search = "<C-g>",
+    cheatsheet_edit = "<leader>te",
+    cheatsheet_new = "<leader>ta",
     accept_suggestion = "<Right>",
     completion_trigger = "<Tab>",
     completion_prev = "<S-Tab>",
@@ -217,6 +266,12 @@ require("terminal_mate").setup({
     debounce_ms = 120,
     -- nil = use $SHELL when it is zsh, otherwise fall back to `zsh`.
     shell = nil,
+  },
+
+  cheatsheets = {
+    -- nil = stdpath("config") .. "/terminal_mate_cheatsheets.lua"
+    path = nil,
+    debounce_ms = 80,
   },
 })
 ```

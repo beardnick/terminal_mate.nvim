@@ -9,6 +9,7 @@
 ---@field keymap TerminalMateKeymap
 ---@field buffer TerminalMateBuffer
 ---@field completion TerminalMateCompletion
+---@field cheatsheets TerminalMateCheatsheets
 
 ---@class TerminalMateKeymap
 ---@field send_line string Send all buffer content in normal/insert mode
@@ -24,6 +25,9 @@
 ---@field history_prev string Navigate to previous (older) history entry
 ---@field history_next string Navigate to next (newer) history entry
 ---@field history_search string Open history search picker
+---@field cheatsheet_search string Search cheatsheets by description
+---@field cheatsheet_edit string Edit the cheatsheet file
+---@field cheatsheet_new string Create a cheatsheet entry
 ---@field accept_suggestion string Accept the current autosuggestion
 ---@field completion_trigger string Trigger native shell completion in tab mode / move to the next completion item
 ---@field completion_prev string Select the previous completion item in insert mode
@@ -40,6 +44,10 @@
 
 ---@class TerminalMateShellIntegration
 ---@field enabled boolean Enable shell integration for TerminalMate-managed Neovim terminals when supported
+
+---@class TerminalMateCheatsheets
+---@field path string|nil Path to the Lua file that returns cheatsheet entries
+---@field debounce_ms number Delay before refreshing cheatsheet variable completion
 
 local M = {}
 
@@ -59,6 +67,10 @@ M.defaults = {
     debounce_ms = 120,
     shell = nil,
   },
+  cheatsheets = {
+    path = nil,
+    debounce_ms = 80,
+  },
   keymap = {
     send_line = "<C-s>",
     send_visual = "<leader>ts",
@@ -73,6 +85,9 @@ M.defaults = {
     history_prev = "<Up>",
     history_next = "<Down>",
     history_search = "<C-r>",
+    cheatsheet_search = "<C-g>",
+    cheatsheet_edit = "<leader>te",
+    cheatsheet_new = "<leader>ta",
     accept_suggestion = "<Right>",
     completion_trigger = "<Tab>",
     completion_prev = "<S-Tab>",
@@ -100,6 +115,10 @@ function M.setup(opts)
 
   if type(M.options.completion.debounce_ms) ~= "number" or M.options.completion.debounce_ms < 0 then
     error("terminal_mate: completion.debounce_ms must be a non-negative number")
+  end
+
+  if type(M.options.cheatsheets.debounce_ms) ~= "number" or M.options.cheatsheets.debounce_ms < 0 then
+    error("terminal_mate: cheatsheets.debounce_ms must be a non-negative number")
   end
 
   if type(M.options.shell_integration.enabled) ~= "boolean" then

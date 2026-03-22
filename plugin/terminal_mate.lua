@@ -75,6 +75,18 @@ vim.api.nvim_create_user_command("TerminalMateHistoryNext", function()
   require("terminal_mate").history_next()
 end, { desc = "Next history entry" })
 
+vim.api.nvim_create_user_command("TerminalMateCheatsheetSearch", function()
+  require("terminal_mate").cheatsheet_search()
+end, { desc = "Search cheatsheets by description" })
+
+vim.api.nvim_create_user_command("TerminalMateCheatsheetEdit", function()
+  require("terminal_mate").cheatsheet_edit()
+end, { desc = "Edit the cheatsheet file" })
+
+vim.api.nvim_create_user_command("TerminalMateCheatsheetNew", function()
+  require("terminal_mate").cheatsheet_new()
+end, { desc = "Create a cheatsheet entry" })
+
 vim.api.nvim_create_user_command("TerminalMateDebugCompletion", function()
   require("terminal_mate").debug_completion_context()
 end, { desc = "Show completion backend/cwd debug information" })
