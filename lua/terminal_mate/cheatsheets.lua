@@ -291,11 +291,24 @@ local function get_mark_position(buf, mark_id)
   return pos[1], pos[2]
 end
 
-local function get_placeholder_range(buf, placeholder)
-  local start_row, start_col = get_mark_position(buf, placeholder.start_mark)
-  local end_row, end_col = get_mark_position(buf, placeholder.end_mark)
-  if start_row == nil or end_row == nil then
+local function normalize_range(buf, range)
+  if not range or not vim.api.nvim_buf_is_valid(buf) then
     return nil
+  end
+
+  local line_count = math.max(vim.api.nvim_buf_line_count(buf), 1)
+  local start_row = math.max(0, math.min(range.start_row, line_count - 1))
+  local end_row = math.max(0, math.min(range.end_row, line_count - 1))
+
+  local start_line = vim.api.nvim_buf_get_lines(buf, start_row, start_row + 1, false)[1] or ""
+  local end_line = vim.api.nvim_buf_get_lines(buf, end_row, end_row + 1, false)[1] or ""
+
+  local start_col = math.max(0, math.min(range.start_col, #start_line))
+  local end_col = math.max(0, math.min(range.end_col, #end_line))
+
+  if end_row < start_row or (end_row == start_row and end_col < start_col) then
+    end_row = start_row
+    end_col = start_col
   end
 
   return {
@@ -304,6 +317,21 @@ local function get_placeholder_range(buf, placeholder)
     end_row = end_row,
     end_col = end_col,
   }
+end
+
+local function get_placeholder_range(buf, placeholder)
+  local start_row, start_col = get_mark_position(buf, placeholder.start_mark)
+  local end_row, end_col = get_mark_position(buf, placeholder.end_mark)
+  if start_row == nil or end_row == nil then
+    return nil
+  end
+
+  return normalize_range(buf, {
+    start_row = start_row,
+    start_col = start_col,
+    end_row = end_row,
+    end_col = end_col,
+  })
 end
 
 local function cursor_in_range(cursor_row, cursor_col, range)
