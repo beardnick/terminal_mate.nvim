@@ -2611,6 +2611,10 @@ function M._setup_buffer_keymaps(buf)
     end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Previous shell completion" }))
 
     vim.keymap.set("i", "<CR>", function()
+      if cheatsheets.confirm(buf, vim.api.nvim_get_current_win()) then
+        return
+      end
+
       if zsh_completion.confirm() then
         return
       end

@@ -413,6 +413,27 @@ local function close_popup_menu()
   pcall(vim.api.nvim_select_popupmenu_item, -1, false, true, {})
 end
 
+local function popup_selected_word()
+  local info = vim.fn.complete_info({ "selected", "items", "completed" })
+  if type(info) ~= "table" then
+    return nil
+  end
+
+  if type(info.completed) == "table" and type(info.completed.word) == "string" and info.completed.word ~= "" then
+    return info.completed.word
+  end
+
+  local selected = tonumber(info.selected)
+  if selected and selected >= 0 and type(info.items) == "table" then
+    local item = info.items[selected + 1]
+    if type(item) == "table" and type(item.word) == "string" and item.word ~= "" then
+      return item.word
+    end
+  end
+
+  return nil
+end
+
 local function current_placeholder_text(buf, placeholder)
   local range = get_placeholder_range(buf, placeholder)
   if not range then
@@ -671,6 +692,34 @@ function M.complete_at_cursor(buf, win)
   end
 
   vim.fn.complete(range.start_col + 1, completion_items)
+  return true
+end
+
+function M.confirm(buf, win)
+  if vim.fn.pumvisible() ~= 1 then
+    return false
+  end
+
+  local placeholder, range = placeholder_at_cursor(buf, win)
+  if not placeholder or not range then
+    return false
+  end
+
+  local word = popup_selected_word()
+  if not word then
+    close_popup_menu()
+    return true
+  end
+
+  state.completion_generation = state.completion_generation + 1
+  close_popup_menu()
+
+  vim.api.nvim_buf_set_text(buf, range.start_row, range.start_col, range.end_row, range.end_col, { word })
+  local updated_range = get_placeholder_range(buf, placeholder)
+  if updated_range and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_win_set_cursor(win, { updated_range.end_row + 1, updated_range.end_col })
+  end
+  M.refresh(buf, win)
   return true
 end
 
