@@ -39,6 +39,7 @@ local state = {
   input_buf = nil,           -- buffer number for the command input
   is_open = false,           -- true when the dedicated TerminalMate input UI is active
   autosuggestion = nil,      -- active history-backed autosuggestion for the input buffer
+  accepted_suggestion = nil, -- last accepted autosuggestion text for exact sends
   history = {},              -- command history (loaded from zsh + session)
   history_index = 0,         -- 0 = not browsing, 1 = most recent
   _saved_nvim_height = nil,  -- saved nvim pane height before search resize
@@ -524,6 +525,58 @@ local function get_raw_buffer_text(buf)
   return table.concat(lines, "\n")
 end
 
+---@param text string
+---@return string
+local function normalize_buffer_text(text)
+  local lines = split_buffer_text(text)
+  local first = 1
+  while first <= #lines and vim.trim(lines[first]) == "" do
+    first = first + 1
+  end
+
+  local last = #lines
+  while last >= first and vim.trim(lines[last]) == "" do
+    last = last - 1
+  end
+
+  if first > last then
+    return ""
+  end
+
+  return table.concat(vim.list_slice(lines, first, last), "\n")
+end
+
+---@param buf number|nil
+local function clear_accepted_suggestion(buf)
+  if not state.accepted_suggestion then
+    return
+  end
+
+  if not buf or state.accepted_suggestion.buf == buf then
+    state.accepted_suggestion = nil
+  end
+end
+
+---@param buf number
+local function sync_accepted_suggestion(buf)
+  local accepted = state.accepted_suggestion
+  if not accepted or accepted.buf ~= buf then
+    return
+  end
+
+  if not vim.api.nvim_buf_is_valid(buf) then
+    state.accepted_suggestion = nil
+    return
+  end
+
+  local raw = get_raw_buffer_text(buf)
+  if raw == accepted.text or accepted.text:sub(1, #raw) == raw then
+    return
+  end
+
+  state.accepted_suggestion = nil
+end
+
 ---@param buf number
 ---@param text string
 ---@return string[]
@@ -537,6 +590,7 @@ end
 ---@param buf number
 ---@param win number
 local function refresh_input_buffer_state(buf, win)
+  sync_accepted_suggestion(buf)
   render_input_autosuggestion(buf, win)
   cheatsheets.refresh(buf, win)
   refresh_completion_state(buf, win)
@@ -814,17 +868,26 @@ local function get_or_create_input_buf()
   return buf
 end
 
---- Get all non-empty lines from the current buffer as a single command block
+--- Get the current buffer as a command block, preserving internal blank lines.
 ---@return string
 local function get_buffer_text()
-  local lines = vim.api.nvim_buf_get_lines(0, 0, -1, false)
-  local non_empty = {}
-  for _, line in ipairs(lines) do
-    if vim.trim(line) ~= "" then
-      table.insert(non_empty, line)
+  local buf = vim.api.nvim_get_current_buf()
+  local raw = get_raw_buffer_text(buf)
+  local normalized = normalize_buffer_text(raw)
+
+  if buf == state.input_buf then
+    sync_accepted_suggestion(buf)
+
+    local accepted = state.accepted_suggestion
+    if accepted and accepted.buf == buf then
+      local accepted_text = normalize_buffer_text(accepted.text)
+      if accepted_text ~= "" and accepted_text ~= normalized and accepted.text:sub(1, #raw) == raw then
+        return accepted_text
+      end
     end
   end
-  return table.concat(non_empty, "\n")
+
+  return normalized
 end
 
 --- Get visual selection text
@@ -1715,6 +1778,7 @@ end
 --- Clear the buffer content
 local function clear_buffer()
   if config.options.clear_input then
+    clear_accepted_suggestion(0)
     set_buffer_text(0, "")
     vim.api.nvim_win_set_cursor(0, { 1, 0 })
     if vim.api.nvim_get_current_buf() == state.input_buf then
@@ -2181,6 +2245,10 @@ function M.accept_suggestion()
   end
 
   state.history_index = 0
+  state.accepted_suggestion = {
+    buf = buf,
+    text = candidate.text,
+  }
   state.autosuggestion = nil
   if not use_paste then
     render_input_autosuggestion(buf, win)
