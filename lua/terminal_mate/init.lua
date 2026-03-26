@@ -1900,11 +1900,40 @@ function M.accept_suggestion()
     return false
   end
 
-  local lines = set_buffer_text(buf, candidate.text)
-  move_cursor_to_buffer_end(win, buf)
+  local current_text = get_raw_buffer_text(buf)
+  local mode = vim.api.nvim_get_mode().mode
+  local use_paste = (mode:sub(1, 1) == "i" or mode:sub(1, 1) == "R")
+    and current_text ~= candidate.text
+    and candidate.text:sub(1, #current_text) == current_text
+
+  local lines = nil
+  if use_paste then
+    clear_input_autosuggestion(buf)
+    local ok_paste, pasted = pcall(vim.api.nvim_paste, candidate.remainder, false, -1)
+    if ok_paste and pasted then
+      lines = split_buffer_text(candidate.text)
+      vim.schedule(function()
+        if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then
+          return
+        end
+        if vim.api.nvim_win_get_buf(win) ~= buf then
+          return
+        end
+        render_input_autosuggestion(buf, win)
+      end)
+    end
+  end
+
+  if not lines then
+    lines = set_buffer_text(buf, candidate.text)
+    move_cursor_to_buffer_end(win, buf)
+  end
+
   state.history_index = 0
   state.autosuggestion = nil
-  render_input_autosuggestion(buf, win)
+  if not use_paste then
+    render_input_autosuggestion(buf, win)
+  end
 
   return #lines > 0
 end
