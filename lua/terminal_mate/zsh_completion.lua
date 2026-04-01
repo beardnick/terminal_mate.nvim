@@ -397,24 +397,46 @@ end
 ---@param line string
 ---@param cursor_col number
 ---@param query string
----@param items table[]
+---@param path_request TerminalMatePathRequest|nil
 ---@return number
-local function completion_replace_start(line, cursor_col, query, items)
+local function completion_replace_start(line, cursor_col, query, path_request)
   local token_start = find_token_start(line, cursor_col)
+  if not path_request or path_request.prefix == "" then
+    return token_start
+  end
+
   local slash_offset = query:match("^.*()/")
   if not slash_offset then
     return token_start
   end
 
-  local path_prefix = query:sub(1, slash_offset)
-  for _, item in ipairs(items) do
-    local word = item.word or ""
-    if word:sub(1, #path_prefix) == path_prefix then
-      return token_start
-    end
+  return token_start + slash_offset
+end
+
+---@param items table[]
+---@param path_request TerminalMatePathRequest|nil
+---@return table[]
+local function normalize_path_completion_items(items, path_request)
+  if not path_request or path_request.prefix == "" then
+    return items
   end
 
-  return token_start + slash_offset
+  local normalized = {}
+  local prefix = path_request.prefix
+
+  for _, item in ipairs(items) do
+    local copy = vim.deepcopy(item)
+    local word = copy.word or ""
+    if word:sub(1, #prefix) == prefix then
+      copy.word = word:sub(#prefix + 1)
+      if copy.abbr == nil or copy.abbr == "" then
+        copy.abbr = word
+      end
+    end
+    table.insert(normalized, copy)
+  end
+
+  return normalized
 end
 
 ---@param line string
@@ -1127,6 +1149,7 @@ function M.complete_at_cursor(buf, win, opts)
       end
 
       local items = fuzzy_sort_items(completion_items, request.filter_query)
+      items = normalize_path_completion_items(items, request.path_request)
 
       if #items == 1 and updated_line ~= line then
         finish()
@@ -1137,7 +1160,7 @@ function M.complete_at_cursor(buf, win, opts)
         updated_line,
         updated_cursor,
         current_completion_query(updated_line, updated_cursor),
-        items
+        request.path_request
       )
       vim.fn.complete(start_col, items)
       finish()
