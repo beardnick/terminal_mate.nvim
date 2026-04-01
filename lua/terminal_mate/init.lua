@@ -10,8 +10,8 @@ local M = {}
 
 local SIDEBAR_BUFNAME = "[TerminalMateList]"
 local SIDEBAR_FILETYPE = "terminal_mate_sidebar"
-local SIDEBAR_MIN_WIDTH = 10
-local SIDEBAR_MAX_WIDTH = 18
+local SIDEBAR_MIN_WIDTH = 14
+local SIDEBAR_MAX_WIDTH = 28
 local SIDEBAR_NS = vim.api.nvim_create_namespace("TerminalMateSidebar")
 local AUTOSUGGEST_NS = vim.api.nvim_create_namespace("TerminalMateAutosuggest")
 local AUTOSUGGEST_PREVIEW_MAX = 120
@@ -104,6 +104,44 @@ end
 ---@return number
 local function clamp(value, minimum, maximum)
   return math.max(minimum, math.min(maximum, value))
+end
+
+---@param text string
+---@return number
+local function display_width(text)
+  return vim.fn.strdisplaywidth(text)
+end
+
+---@param text string
+---@param width number
+---@return string
+local function pad_right(text, width)
+  local padding = math.max(width - display_width(text), 0)
+  return text .. string.rep(" ", padding)
+end
+
+---@param path string|nil
+---@return string|nil
+local function path_tail(path)
+  if type(path) ~= "string" or path == "" then
+    return nil
+  end
+
+  local normalized = path
+  if normalized ~= "/" and not normalized:match("^%a:[/\\]?$") then
+    normalized = normalized:gsub("[/\\]+$", "")
+  end
+
+  if normalized == "" then
+    normalized = path
+  end
+
+  local tail = vim.fn.fnamemodify(normalized, ":t")
+  if tail ~= "" then
+    return tail
+  end
+
+  return normalized
 end
 
 ---@param win number|nil
@@ -1126,16 +1164,24 @@ local function get_current_nvim_terminal()
 end
 
 local function build_sidebar_entries()
-  local terminals = vim.deepcopy(state.nvim_terminals)
+  local terminals = {}
+  for _, terminal in ipairs(state.nvim_terminals) do
+    table.insert(terminals, terminal)
+  end
+
   table.sort(terminals, function(left, right)
     return (left.id or 0) < (right.id or 0)
   end)
 
   for _, terminal in ipairs(terminals) do
-    local shell_command = terminal.shell_command or config.options.shell or vim.env.SHELL or vim.o.shell or "shell"
-    local executable = shell_command:match("^%s*([^%s]+)") or shell_command
-    local label = vim.fn.fnamemodify(executable, ":t")
-    label = label ~= "" and label or "shell"
+    local label = path_tail(nvim_terminal.current_path(terminal))
+    if not label then
+      local shell_command = terminal.shell_command or config.options.shell or vim.env.SHELL or vim.o.shell or "shell"
+      local executable = shell_command:match("^%s*([^%s]+)") or shell_command
+      label = vim.fn.fnamemodify(executable, ":t")
+      label = label ~= "" and label or "shell"
+    end
+
     terminal._sidebar_label = label
   end
 
@@ -1148,8 +1194,8 @@ local function build_sidebar_entries()
     local label = terminal._sidebar_label or "shell"
 
     local prefix = is_active and "| " or "  "
-    local line = prefix .. label
-    longest = math.max(longest, #line)
+    local line = string.format("%s#%d %s", prefix, terminal.id or index, label)
+    longest = math.max(longest, display_width(line))
     table.insert(rows, {
       line = line,
       terminal_id = terminal.id,
@@ -1168,7 +1214,7 @@ local function build_sidebar_entries()
 
   for _, row in ipairs(rows) do
     local line_number = #lines + 1
-    table.insert(lines, string.format("%-" .. width .. "s", row.line))
+    table.insert(lines, pad_right(row.line, width))
     terminal_ids[line_number] = row.terminal_id
     line_highlights[line_number] = row.active and "TerminalMateSidebarActive" or "TerminalMateSidebarInactive"
   end
@@ -1245,6 +1291,7 @@ switch_nvim_terminal = function(terminal_id)
 
   if terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
     mark_nvim_terminal_active(terminal)
+    pcall(vim.api.nvim_set_current_win, terminal.win)
     return
   end
 
@@ -2800,6 +2847,35 @@ local function setup_autocmds()
   end
 end
 
+local function setup_terminal_switch_keymaps(gopts)
+  local keymap = config.options.keymap
+
+  if keymap.prev_terminal and keymap.prev_terminal ~= "" then
+    vim.keymap.set("n", keymap.prev_terminal, function()
+      M.prev_terminal()
+    end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Previous terminal" }))
+  end
+
+  if keymap.next_terminal and keymap.next_terminal ~= "" then
+    vim.keymap.set("n", keymap.next_terminal, function()
+      M.next_terminal()
+    end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Next terminal" }))
+  end
+
+  if type(keymap.switch_prefix) ~= "string" or keymap.switch_prefix == "" then
+    return
+  end
+
+  for terminal_id = 1, 9 do
+    local id = terminal_id
+    vim.keymap.set("n", keymap.switch_prefix .. id, function()
+      M.switch_terminal(id)
+    end, vim.tbl_extend("force", gopts, {
+      desc = string.format("TerminalMate: Switch to terminal #%d", id),
+    }))
+  end
+end
+
 --- Plugin setup
 ---@param opts table|nil
 function M.setup(opts)
@@ -2860,6 +2936,8 @@ function M.setup(opts)
   vim.keymap.set("n", keymap.toggle, function()
     M.toggle()
   end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Toggle terminal pane" }))
+
+  setup_terminal_switch_keymaps(gopts)
 
   vim.keymap.set("x", keymap.send_visual, function()
     local visual_type = vim.fn.visualmode()

@@ -22,6 +22,9 @@
 ---@field toggle string Toggle terminal pane
 ---@field clear string Send clear to terminal
 ---@field interrupt string Send Ctrl-C to terminal
+---@field prev_terminal string Switch to the previous managed terminal
+---@field next_terminal string Switch to the next managed terminal
+---@field switch_prefix string Prefix for normal-mode numeric terminal jump keymaps
 ---@field history_prev string Navigate to previous (older) history entry
 ---@field history_next string Navigate to next (newer) history entry
 ---@field history_search string Open history search picker
@@ -82,6 +85,9 @@ M.defaults = {
     toggle = "<leader>tt",
     clear = "<C-l>",
     interrupt = "<C-c>",
+    prev_terminal = "<leader>t[",
+    next_terminal = "<leader>t]",
+    switch_prefix = "<leader>t",
     history_prev = "<Up>",
     history_next = "<Down>",
     history_search = "<C-r>",

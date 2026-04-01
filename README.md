@@ -9,7 +9,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Neovim-first backend**: `backend = "auto"` prefers Neovim's built-in terminal and falls back to tmux when needed.
 - **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and keep that placement when you hide, reopen, or switch instances.
 - **Multiple terminal instances**: Create multiple managed Neovim terminals and keep sending to the most recently active one.
-- **Slim terminal list sidebar**: Managed Neovim terminals get a compact right-side list with shell labels, active-row emphasis, and click/`Enter` switching.
+- **Slim terminal list sidebar**: Managed Neovim terminals get a compact right-side list with `#id + cwd` tail labels, active-row emphasis, and click/`Enter` switching.
 - **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then clear the input buffer automatically.
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
@@ -206,6 +206,9 @@ Global keymaps:
 | `<leader>to` | Normal | Open the terminal pane |
 | `<leader>tm` | Normal | Enter terminal_mate input mode |
 | `<leader>tn` | Normal | Create a new terminal instance |
+| `<leader>t[` | Normal | Switch to the previous terminal instance |
+| `<leader>t]` | Normal | Switch to the next terminal instance |
+| `<leader>t1` ... `<leader>t9` | Normal | Jump directly to terminal `#1` ... `#9` |
 | `<leader>th` | Normal | Hide the current terminal pane |
 | `<leader>tc` | Normal | Close the terminal pane |
 | `<leader>tt` | Normal | Toggle terminal pane visibility (without entering input mode) |
@@ -242,6 +245,9 @@ require("terminal_mate").setup({
     toggle = "<leader>tt",
     clear = "<C-l>",
     interrupt = "<C-c>",
+    prev_terminal = "<leader>t[",
+    next_terminal = "<leader>t]",
+    switch_prefix = "<leader>t",
     history_prev = "<Up>",
     history_next = "<Down>",
     history_search = "<C-r>",
