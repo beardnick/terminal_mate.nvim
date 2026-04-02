@@ -37,11 +37,16 @@ local state = {
   activity_seq = 0,          -- monotonic sequence for latest-active selection
   nvim_pane_id = nil,        -- tmux pane id where nvim runs
   input_buf = nil,           -- buffer number for the command input
+  input_win = nil,           -- dedicated input window id
+  workspace_tab = nil,       -- dedicated TerminalMate tabpage when layout="tab"
+  previous_tab = nil,        -- previously focused tab before entering TerminalMate workspace
   is_open = false,           -- true when the dedicated TerminalMate input UI is active
   autosuggestion = nil,      -- active history-backed autosuggestion for the input buffer
   accepted_suggestion = nil, -- last accepted autosuggestion text for exact sends
   history = {},              -- command history (loaded from zsh + session)
   history_index = 0,         -- 0 = not browsing, 1 = most recent
+  guard_restoring = false,   -- true while restoring dedicated window buffers
+  guard_scheduled = false,   -- true while a restore pass is already queued
   _saved_nvim_height = nil,  -- saved nvim pane height before search resize
   _saved_ui = nil,           -- saved UI options to restore on close
 }
@@ -155,11 +160,98 @@ local function is_normal_window(win)
   return ok and cfg.relative == ""
 end
 
+---@return boolean
+local function use_tab_layout()
+  return config.options.layout == "tab"
+end
+
+---@param tabpage number|nil
+---@return number|nil
+local function normalize_tabpage(tabpage)
+  if tabpage and vim.api.nvim_tabpage_is_valid(tabpage) then
+    return tabpage
+  end
+
+  return nil
+end
+
+---@return number|nil
+local function normalize_workspace_tab()
+  local workspace = normalize_tabpage(state.workspace_tab)
+  state.workspace_tab = workspace
+  if not workspace then
+    state.input_win = nil
+  end
+  return workspace
+end
+
+---@param win number|nil
+---@param tabpage number|nil
+---@return boolean
+local function window_in_tabpage(win, tabpage)
+  return win ~= nil
+    and tabpage ~= nil
+    and vim.api.nvim_win_is_valid(win)
+    and vim.api.nvim_win_get_tabpage(win) == tabpage
+end
+
+---@return number|nil
+local function ensure_workspace_tab()
+  if not use_tab_layout() then
+    return nil
+  end
+
+  local workspace = normalize_workspace_tab()
+  if workspace then
+    local current = vim.api.nvim_get_current_tabpage()
+    if current ~= workspace then
+      state.previous_tab = current
+      vim.api.nvim_set_current_tabpage(workspace)
+    end
+    return workspace
+  end
+
+  state.previous_tab = vim.api.nvim_get_current_tabpage()
+  vim.cmd("tabnew")
+  workspace = vim.api.nvim_get_current_tabpage()
+  state.workspace_tab = workspace
+  state.sidebar_win = nil
+  state.input_win = vim.api.nvim_get_current_win()
+  return workspace
+end
+
+local function close_workspace_tab()
+  local workspace = normalize_workspace_tab()
+  state.input_win = nil
+  state.sidebar_win = nil
+
+  if not workspace then
+    state.previous_tab = nil
+    return
+  end
+
+  local previous = normalize_tabpage(state.previous_tab)
+  local workspace_nr = vim.api.nvim_tabpage_get_number(workspace)
+  if previous and previous ~= workspace and vim.api.nvim_get_current_tabpage() ~= previous then
+    pcall(vim.api.nvim_set_current_tabpage, previous)
+  end
+
+  pcall(vim.cmd, workspace_nr .. "tabclose")
+  state.workspace_tab = nil
+  state.previous_tab = nil
+end
+
 ---@param win number
 local function apply_input_window_options(win)
   vim.wo[win].signcolumn = "no"
   vim.wo[win].number = false
   vim.wo[win].relativenumber = false
+  pcall(function()
+    vim.wo[win].winfixbuf = true
+  end)
+  pcall(function()
+    vim.wo[win].winfixheight = true
+  end)
 
   if config.options.completion.enabled then
     vim.o.completeopt = INPUT_COMPLETEOPT
@@ -229,9 +321,11 @@ local function get_sidebar_windows()
   end
 
   local windows = {}
-  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
-    if is_sidebar_window(win) then
-      table.insert(windows, win)
+  for _, tabpage in ipairs(vim.api.nvim_list_tabpages()) do
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+      if is_sidebar_window(win) then
+        table.insert(windows, win)
+      end
     end
   end
 
@@ -321,6 +415,9 @@ local function configure_sidebar_window(win, width)
   vim.wo[win].signcolumn = "no"
   vim.wo[win].wrap = false
   vim.wo[win].winfixwidth = true
+  pcall(function()
+    vim.wo[win].winfixbuf = true
+  end)
   vim.wo[win].cursorline = false
   vim.wo[win].fillchars = "eob: "
 end
@@ -904,6 +1001,234 @@ local function get_or_create_input_buf()
   end
 
   return buf
+end
+
+---@param buf number|nil
+---@return boolean
+local function is_managed_terminal_buffer(buf)
+  return buf ~= nil
+    and vim.api.nvim_buf_is_valid(buf)
+    and vim.b[buf].terminal_mate_managed == true
+end
+
+---@return number|nil
+local function normalize_input_window()
+  local input_win = state.input_win
+  if not input_win or not vim.api.nvim_win_is_valid(input_win) or not is_normal_window(input_win) then
+    state.input_win = nil
+    return nil
+  end
+
+  local workspace = normalize_workspace_tab()
+  if workspace and not window_in_tabpage(input_win, workspace) then
+    state.input_win = nil
+    return nil
+  end
+
+  return input_win
+end
+
+---@param tabpage number
+---@return number|nil
+local function find_workspace_input_window_candidate(tabpage)
+  local candidates = {}
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(tabpage)) do
+    if is_normal_window(win) then
+      local buf = vim.api.nvim_win_get_buf(win)
+      if buf ~= state.sidebar_buf and not is_managed_terminal_buffer(buf) then
+        table.insert(candidates, win)
+      end
+    end
+  end
+
+  table.sort(candidates, function(left, right)
+    local left_pos = vim.api.nvim_win_get_position(left)
+    local right_pos = vim.api.nvim_win_get_position(right)
+    if left_pos[1] ~= right_pos[1] then
+      return left_pos[1] < right_pos[1]
+    end
+    return left_pos[2] < right_pos[2]
+  end)
+
+  return candidates[1]
+end
+
+---@return number|nil
+local function ensure_workspace_input_window()
+  if not use_tab_layout() then
+    return nil
+  end
+
+  local workspace = ensure_workspace_tab()
+  if not workspace then
+    return nil
+  end
+
+  local input_buf = get_or_create_input_buf()
+  local input_win = normalize_input_window()
+  if input_win and window_in_tabpage(input_win, workspace) then
+    pcall(vim.api.nvim_win_set_buf, input_win, input_buf)
+    apply_input_window_options(input_win)
+    return input_win
+  end
+
+  input_win = find_workspace_input_window_candidate(workspace)
+  if not input_win then
+    local anchor = nil
+    local visible_terminal = get_visible_nvim_terminal()
+    if visible_terminal and visible_terminal.win and window_in_tabpage(visible_terminal.win, workspace) then
+      anchor = visible_terminal.win
+    else
+      for _, win in ipairs(vim.api.nvim_tabpage_list_wins(workspace)) do
+        if is_normal_window(win) and win ~= state.sidebar_win then
+          anchor = win
+          break
+        end
+      end
+    end
+
+    if anchor and vim.api.nvim_win_is_valid(anchor) then
+      vim.api.nvim_set_current_tabpage(workspace)
+      vim.api.nvim_set_current_win(anchor)
+      local ok = pcall(vim.cmd, "aboveleft split")
+      if ok then
+        input_win = vim.api.nvim_get_current_win()
+      end
+    end
+  end
+
+  if not input_win or not vim.api.nvim_win_is_valid(input_win) then
+    return nil
+  end
+
+  state.input_win = input_win
+  pcall(vim.api.nvim_win_set_buf, input_win, input_buf)
+  apply_input_window_options(input_win)
+  return input_win
+end
+
+---@return number|nil
+local function resolve_nvim_anchor_win()
+  if use_tab_layout() then
+    return ensure_workspace_input_window()
+  end
+
+  return nil
+end
+
+---@return number|nil
+local function show_input_buffer()
+  local buf = get_or_create_input_buf()
+  local win = nil
+
+  if use_tab_layout() then
+    win = ensure_workspace_input_window()
+    if not win then
+      return nil
+    end
+    vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(win))
+    vim.api.nvim_set_current_win(win)
+  else
+    vim.api.nvim_set_current_buf(buf)
+    win = vim.api.nvim_get_current_win()
+    state.input_win = win
+  end
+
+  M._setup_buffer_keymaps(buf)
+
+  if config.options.completion.enabled then
+    zsh_completion.prime()
+  end
+
+  apply_input_window_options(win)
+  render_input_autosuggestion(buf, win)
+  return win
+end
+
+---@param terminal table|nil
+local function focus_nvim_terminal_window(terminal)
+  if not terminal or not terminal.win or not vim.api.nvim_win_is_valid(terminal.win) then
+    return
+  end
+
+  if use_tab_layout() then
+    local tabpage = vim.api.nvim_win_get_tabpage(terminal.win)
+    if normalize_tabpage(tabpage) and vim.api.nvim_get_current_tabpage() ~= tabpage then
+      vim.api.nvim_set_current_tabpage(tabpage)
+    end
+  end
+
+  pcall(vim.api.nvim_set_current_win, terminal.win)
+end
+
+---@param win number|nil
+---@param buf number|nil
+---@param kind string
+local function restore_guarded_window(win, buf, kind)
+  if state.guard_restoring then
+    return
+  end
+
+  if not win or not buf or not vim.api.nvim_win_is_valid(win) or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  local current_buf = vim.api.nvim_win_get_buf(win)
+  if current_buf ~= buf then
+    state.guard_restoring = true
+    pcall(vim.api.nvim_win_set_buf, win, buf)
+    state.guard_restoring = false
+  end
+
+  if kind == "input" then
+    state.input_win = win
+    M._setup_buffer_keymaps(buf)
+    apply_input_window_options(win)
+  elseif kind == "sidebar" then
+    configure_sidebar_window(win, vim.api.nvim_win_get_width(win))
+  elseif kind == "terminal" then
+    nvim_terminal.configure_window(win)
+  end
+end
+
+local function enforce_guarded_windows()
+  if state.guard_restoring then
+    return
+  end
+
+  local input_win = normalize_input_window()
+  if input_win and state.input_buf and vim.api.nvim_buf_is_valid(state.input_buf) then
+    restore_guarded_window(input_win, state.input_buf, "input")
+  end
+
+  if state.sidebar_win and not vim.api.nvim_win_is_valid(state.sidebar_win) then
+    state.sidebar_win = nil
+    state.sidebar_terminal_ids = {}
+  end
+
+  if state.sidebar_win and state.sidebar_buf and vim.api.nvim_buf_is_valid(state.sidebar_buf) then
+    restore_guarded_window(state.sidebar_win, state.sidebar_buf, "sidebar")
+  end
+
+  for _, terminal in ipairs(state.nvim_terminals) do
+    if terminal.win and not vim.api.nvim_win_is_valid(terminal.win) then
+      terminal.win = nil
+    elseif terminal.win and terminal.buf and vim.api.nvim_buf_is_valid(terminal.buf) then
+      restore_guarded_window(terminal.win, terminal.buf, "terminal")
+    end
+  end
+end
+
+local function schedule_guard_enforcement()
+  if state.guard_scheduled then
+    return
+  end
+
+  state.guard_scheduled = true
+  vim.schedule(function()
+    state.guard_scheduled = false
+    enforce_guarded_windows()
+  end)
 end
 
 --- Get the current buffer as a command block, preserving internal blank lines.
@@ -1524,6 +1849,7 @@ end
 show_nvim_terminal = function(terminal)
   local visible = get_visible_nvim_terminal()
   local reuse_win = visible and visible.win or nil
+  local anchor_win = resolve_nvim_anchor_win()
   if visible and visible.id ~= terminal.id then
     visible.win = nil
   end
@@ -1531,6 +1857,7 @@ show_nvim_terminal = function(terminal)
   local ok, err = nvim_terminal.show(terminal, {
     split_percent = config.options.split_percent,
     reuse_win = reuse_win,
+    anchor_win = anchor_win,
   })
   if not ok then
     notify(err or "Failed to show Neovim terminal.", vim.log.levels.ERROR)
@@ -1548,6 +1875,7 @@ local function create_nvim_terminal()
 
   local visible = get_visible_nvim_terminal()
   local reuse_win = visible and visible.win or nil
+  local anchor_win = resolve_nvim_anchor_win()
   if visible then
     visible.win = nil
   end
@@ -1564,6 +1892,7 @@ local function create_nvim_terminal()
     shell = config.options.shell,
     shell_integration = config.options.shell_integration,
     reuse_win = reuse_win,
+    anchor_win = anchor_win,
   })
   if not ok then
     notify(err or "Failed to create Neovim terminal.", vim.log.levels.ERROR)
@@ -1898,6 +2227,9 @@ function M.open_pane()
   if backend == "tmux" then
     notify("Terminal pane opened (" .. target .. ", tmux backend)")
   else
+    if use_tab_layout() then
+      focus_nvim_terminal_window(target)
+    end
     notify("Terminal pane opened (Neovim backend #" .. target.id .. ")")
   end
 end
@@ -1916,16 +2248,10 @@ function M.open()
     apply_minimal_ui()
   end
 
-  local buf = get_or_create_input_buf()
-  vim.api.nvim_set_current_buf(buf)
-  M._setup_buffer_keymaps(buf)
-
-  if config.options.completion.enabled then
-    zsh_completion.prime()
+  local win = show_input_buffer()
+  if not win then
+    return
   end
-
-  apply_input_window_options(vim.api.nvim_get_current_win())
-  render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
   if backend == "tmux" then
     notify("TerminalMate mode opened (" .. target .. ", tmux backend)")
@@ -1972,16 +2298,10 @@ function M.new_terminal()
     apply_minimal_ui()
   end
 
-  local buf = get_or_create_input_buf()
-  vim.api.nvim_set_current_buf(buf)
-  M._setup_buffer_keymaps(buf)
-
-  if config.options.completion.enabled then
-    zsh_completion.prime()
+  local win = show_input_buffer()
+  if not win then
+    return
   end
-
-  apply_input_window_options(vim.api.nvim_get_current_win())
-  render_input_autosuggestion(buf, vim.api.nvim_get_current_win())
 
   if backend == "tmux" then
     notify("Terminal pane opened (" .. target .. ", tmux backend)")
@@ -2019,6 +2339,11 @@ function M.close()
       restore_ui()
     end
     close_nvim_sidebar()
+    if use_tab_layout() then
+      close_workspace_tab()
+    else
+      state.input_win = nil
+    end
     notify("No terminal pane to close.", vim.log.levels.WARN)
     return
   end
@@ -2039,6 +2364,11 @@ function M.close()
   state.is_open = false
   close_nvim_sidebar()
   restore_ui()
+  if use_tab_layout() then
+    close_workspace_tab()
+  else
+    state.input_win = nil
+  end
 
   notify("Terminal pane closed.")
 end
@@ -2537,10 +2867,13 @@ function M.get_state()
   local current_terminal = get_current_nvim_terminal()
   return {
     is_open = state.is_open,
+    layout = config.options.layout,
     backend = get_active_backend(),
     terminal_pane_id = state.terminal_pane_id,
     terminal_buf = state.terminal_buf,
     terminal_win = state.terminal_win,
+    input_win = normalize_input_window(),
+    workspace_tab = normalize_workspace_tab(),
     current_terminal_id = current_terminal and current_terminal.id or nil,
     nvim_terminal_count = #state.nvim_terminals,
     nvim_pane_id = state.nvim_pane_id,
@@ -2789,6 +3122,17 @@ local function setup_autocmds()
           break
         end
       end
+
+      schedule_guard_enforcement()
+    end,
+  })
+
+  vim.api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "TabEnter" }, {
+    group = group,
+    callback = function()
+      if state.input_win or state.sidebar_win or #state.nvim_terminals > 0 then
+        schedule_guard_enforcement()
+      end
     end,
   })
 
@@ -2810,17 +3154,31 @@ local function setup_autocmds()
     group = group,
     callback = function(args)
       local closed_win = tonumber(args.match)
+      if closed_win and state.input_win == closed_win then
+        state.input_win = nil
+      end
       if closed_win and state.sidebar_win == closed_win then
         state.sidebar_win = nil
         state.sidebar_terminal_ids = {}
-        return
       end
 
-      if state.sidebar_win or #state.nvim_terminals > 0 then
+      if closed_win then
+        for _, terminal in ipairs(state.nvim_terminals) do
+          if terminal.win == closed_win then
+            terminal.win = nil
+          end
+        end
+      end
+
+      if state.sidebar_win or state.input_win or #state.nvim_terminals > 0 then
         vim.schedule(function()
+          if use_tab_layout() and not normalize_input_window() and (state.is_open or has_nvim_terminal()) then
+            ensure_workspace_input_window()
+          end
           if sync_nvim_sidebar then
             sync_nvim_sidebar()
           end
+          schedule_guard_enforcement()
         end)
       end
     end,

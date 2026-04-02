@@ -1,5 +1,6 @@
 ---@class TerminalMateConfig
 ---@field backend string Terminal backend selection mode: "auto", "nvim", or "tmux"
+---@field layout string TerminalMate UI layout mode: "split" or "tab"
 ---@field split_percent number Percentage of editor height used by the terminal pane
 ---@field shell string|nil Shell to use in the terminal pane (nil = default shell)
 ---@field close_on_exit boolean Close terminal pane when nvim exits
@@ -56,6 +57,7 @@ local M = {}
 
 M.defaults = {
   backend = "auto",
+  layout = "split",
   split_percent = 50,
   shell = nil,
   close_on_exit = true,
@@ -113,6 +115,10 @@ function M.setup(opts)
 
   if not vim.tbl_contains({ "auto", "nvim", "tmux" }, M.options.backend) then
     error("terminal_mate: backend must be one of 'auto', 'nvim', or 'tmux'")
+  end
+
+  if not vim.tbl_contains({ "split", "tab" }, M.options.layout) then
+    error("terminal_mate: layout must be 'split' or 'tab'")
   end
 
   if not vim.tbl_contains({ "auto", "tab" }, M.options.completion.trigger) then

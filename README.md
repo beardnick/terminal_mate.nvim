@@ -7,9 +7,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ## Features
 
 - **Neovim-first backend**: `backend = "auto"` prefers Neovim's built-in terminal and falls back to tmux when needed.
-- **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and keep that placement when you hide, reopen, or switch instances.
+- **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and can also live in a dedicated TerminalMate tab workspace.
 - **Multiple terminal instances**: Create multiple managed Neovim terminals and keep sending to the most recently active one.
 - **Slim terminal list sidebar**: Managed Neovim terminals get a compact right-side list with `#id + cwd` tail labels, active-row emphasis, and click/`Enter` switching.
+- **Guarded dedicated windows**: Input, terminal, and sidebar windows automatically restore their intended buffers if another command steals the window.
 - **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then clear the input buffer automatically.
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
@@ -221,6 +222,8 @@ Global keymaps:
 require("terminal_mate").setup({
   -- "auto" prefers Neovim's built-in terminal, then falls back to tmux.
   backend = "auto",
+  -- "split" keeps TerminalMate in the current tab, "tab" opens a dedicated workspace tab.
+  layout = "split",
   -- Percentage of the editor height used by the terminal pane.
   split_percent = 50,
   -- Shell to run in the terminal pane (nil = default shell).
@@ -287,6 +290,11 @@ require("terminal_mate").setup({
 - `auto`: prefer Neovim's built-in terminal, fall back to tmux if the Neovim backend is unavailable.
 - `nvim`: always use Neovim's built-in terminal split.
 - `tmux`: always use tmux panes.
+
+### Layout Modes
+
+- `split`: keep TerminalMate in the current tab and reuse the current window for the input buffer.
+- `tab`: open TerminalMate in a dedicated tab workspace, with the input/terminal/sidebar windows guarded against accidental buffer replacement.
 
 ## How History Works
 

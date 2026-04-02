@@ -519,7 +519,27 @@ local function remember_error(terminal, message)
   return message
 end
 
-local function pick_split_anchor_win()
+---@param preferred_win number|nil
+---@return number|nil
+local function normalize_window(preferred_win)
+  if preferred_win and vim.api.nvim_win_is_valid(preferred_win) then
+    local cfg = vim.api.nvim_win_get_config(preferred_win)
+    if cfg.relative == "" then
+      return preferred_win
+    end
+  end
+
+  return nil
+end
+
+---@param preferred_win number|nil
+---@return number
+local function pick_split_anchor_win(preferred_win)
+  local preferred = normalize_window(preferred_win)
+  if preferred then
+    return preferred
+  end
+
   local current = vim.api.nvim_get_current_win()
   local current_cfg = vim.api.nvim_win_get_config(current)
   if current_cfg.relative == "" then
@@ -534,19 +554,6 @@ local function pick_split_anchor_win()
   end
 
   return current
-end
-
----@param preferred_win number|nil
----@return number|nil
-local function normalize_window(preferred_win)
-  if preferred_win and vim.api.nvim_win_is_valid(preferred_win) then
-    local cfg = vim.api.nvim_win_get_config(preferred_win)
-    if cfg.relative == "" then
-      return preferred_win
-    end
-  end
-
-  return nil
 end
 
 ---@param terminal_win number
@@ -581,7 +588,13 @@ local function configure_terminal_window(terminal_win)
   vim.wo[terminal_win].number = false
   vim.wo[terminal_win].relativenumber = false
   vim.wo[terminal_win].signcolumn = "no"
+  vim.wo[terminal_win].winfixheight = true
+  pcall(function()
+    vim.wo[terminal_win].winfixbuf = true
+  end)
 end
+
+M.configure_window = configure_terminal_window
 
 ---@param terminal_win number|nil
 ---@param buffer number|nil
@@ -593,15 +606,16 @@ end
 
 ---@param split_percent number
 ---@param reuse_win number|nil
+---@param anchor_win number|nil
 ---@return number|nil editor_win
 ---@return number|nil terminal_win
-local function open_terminal_window(split_percent, reuse_win)
+local function open_terminal_window(split_percent, reuse_win, anchor_win)
   local existing_win = normalize_window(reuse_win)
   if existing_win then
-    return pick_split_anchor_win(), existing_win
+    return pick_split_anchor_win(anchor_win), existing_win
   end
 
-  local editor_win = pick_split_anchor_win()
+  local editor_win = pick_split_anchor_win(anchor_win)
   if vim.api.nvim_win_is_valid(editor_win) then
     vim.api.nvim_set_current_win(editor_win)
   end
@@ -679,7 +693,7 @@ function M.create(terminal, opts)
   local previous_win = vim.api.nvim_get_current_win()
   local reuse_win = normalize_window(opts.reuse_win)
   local previous_buf = reuse_win and vim.api.nvim_win_get_buf(reuse_win) or nil
-  local editor_win, terminal_win = open_terminal_window(opts.split_percent, reuse_win)
+  local editor_win, terminal_win = open_terminal_window(opts.split_percent, reuse_win, opts.anchor_win)
   if not terminal_win then
     return false, remember_error(terminal, "Failed to open a Neovim terminal split.")
   end
@@ -788,7 +802,7 @@ function M.show(terminal, opts)
 
   local previous_win = vim.api.nvim_get_current_win()
   local reuse_win = normalize_window(opts.reuse_win) or normalize_window(terminal.win)
-  local editor_win, terminal_win = open_terminal_window(opts.split_percent, reuse_win)
+  local editor_win, terminal_win = open_terminal_window(opts.split_percent, reuse_win, opts.anchor_win)
   if not terminal_win then
     return false, remember_error(terminal, "Failed to open a Neovim terminal split.")
   end
