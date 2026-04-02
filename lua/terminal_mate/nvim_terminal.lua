@@ -560,7 +560,27 @@ end
 ---@return number
 local function prepare_terminal_buffer(terminal_win)
   vim.api.nvim_set_current_win(terminal_win)
-  vim.cmd("enew")
+  local had_fixbuf = false
+  local ok_fixbuf = pcall(function()
+    had_fixbuf = vim.wo[terminal_win].winfixbuf
+  end)
+  if ok_fixbuf and had_fixbuf then
+    pcall(function()
+      vim.wo[terminal_win].winfixbuf = false
+    end)
+  end
+
+  local ok_enew, err = pcall(vim.cmd, "enew")
+
+  if ok_fixbuf and had_fixbuf and vim.api.nvim_win_is_valid(terminal_win) then
+    pcall(function()
+      vim.wo[terminal_win].winfixbuf = true
+    end)
+  end
+
+  if not ok_enew then
+    error(err)
+  end
 
   local terminal_buf = vim.api.nvim_get_current_buf()
   vim.bo[terminal_buf].bufhidden = "hide"
@@ -600,7 +620,23 @@ M.configure_window = configure_terminal_window
 ---@param buffer number|nil
 local function restore_window_buffer(terminal_win, buffer)
   if terminal_win and buffer and vim.api.nvim_win_is_valid(terminal_win) and vim.api.nvim_buf_is_valid(buffer) then
+    local had_fixbuf = false
+    local ok_fixbuf = pcall(function()
+      had_fixbuf = vim.wo[terminal_win].winfixbuf
+    end)
+    if ok_fixbuf and had_fixbuf then
+      pcall(function()
+        vim.wo[terminal_win].winfixbuf = false
+      end)
+    end
+
     pcall(vim.api.nvim_win_set_buf, terminal_win, buffer)
+
+    if ok_fixbuf and had_fixbuf and vim.api.nvim_win_is_valid(terminal_win) then
+      pcall(function()
+        vim.wo[terminal_win].winfixbuf = true
+      end)
+    end
   end
 end
 
@@ -808,7 +844,21 @@ function M.show(terminal, opts)
   end
 
   terminal.win = terminal_win
+  local had_fixbuf = false
+  local ok_fixbuf = pcall(function()
+    had_fixbuf = vim.wo[terminal_win].winfixbuf
+  end)
+  if ok_fixbuf and had_fixbuf then
+    pcall(function()
+      vim.wo[terminal_win].winfixbuf = false
+    end)
+  end
   vim.api.nvim_win_set_buf(terminal_win, terminal.buf)
+  if ok_fixbuf and had_fixbuf and vim.api.nvim_win_is_valid(terminal_win) then
+    pcall(function()
+      vim.wo[terminal_win].winfixbuf = true
+    end)
+  end
   configure_terminal_window(terminal_win)
 
   if editor_win and vim.api.nvim_win_is_valid(editor_win) then
