@@ -52,6 +52,7 @@ local state = {
   persisted_session = nil,   -- decoded persisted session payload
   persist_generation = 0,    -- debounce generation for persistence writes
   persist_suspended = false, -- true while restoring persisted state
+  suppress_termclose = false, -- true while explicitly closing a terminal via TerminalMate
   _saved_nvim_height = nil,  -- saved nvim pane height before search resize
   _saved_ui = nil,           -- saved UI options to restore on close
 }
@@ -572,6 +573,25 @@ local function close_nvim_sidebar()
   state.sidebar_terminal_ids = {}
 end
 
+---@param sidebar_win number|nil
+---@param terminal_win number|nil
+---@return boolean
+local function sidebar_is_attached_to_terminal(sidebar_win, terminal_win)
+  if not is_normal_window(sidebar_win) or not is_normal_window(terminal_win) then
+    return false
+  end
+
+  if vim.api.nvim_win_get_tabpage(sidebar_win) ~= vim.api.nvim_win_get_tabpage(terminal_win) then
+    return false
+  end
+
+  local sidebar_pos = vim.api.nvim_win_get_position(sidebar_win)
+  local terminal_pos = vim.api.nvim_win_get_position(terminal_win)
+  return sidebar_pos[1] == terminal_pos[1]
+    and sidebar_pos[2] > terminal_pos[2]
+    and vim.api.nvim_win_get_height(sidebar_win) == vim.api.nvim_win_get_height(terminal_win)
+end
+
 local function get_or_create_sidebar_buf()
   if state.sidebar_buf and vim.api.nvim_buf_is_valid(state.sidebar_buf) then
     return state.sidebar_buf
@@ -627,6 +647,12 @@ end
 local function ensure_sidebar_window(terminal_win, width)
   local sidebar_buf = get_or_create_sidebar_buf()
   local sidebar_win = normalize_sidebar_window()
+
+  if sidebar_win and not sidebar_is_attached_to_terminal(sidebar_win, terminal_win) then
+    pcall(vim.api.nvim_win_close, sidebar_win, true)
+    state.sidebar_win = nil
+    sidebar_win = nil
+  end
 
   if sidebar_win then
     vim.api.nvim_win_set_buf(sidebar_win, sidebar_buf)
@@ -2685,6 +2711,30 @@ function M.hide()
   notify("Terminal pane hidden.")
 end
 
+---@param closed_terminal_id number|nil
+---@return boolean
+local function show_remaining_nvim_terminal(closed_terminal_id)
+  local visible_terminal = get_visible_nvim_terminal()
+  if visible_terminal then
+    mark_nvim_terminal_active(visible_terminal)
+    return true
+  end
+
+  local next_terminal = get_current_nvim_terminal()
+  if not next_terminal or not show_nvim_terminal(next_terminal) then
+    return false
+  end
+
+  if closed_terminal_id then
+    notify(
+      "Terminal #" .. tostring(closed_terminal_id) .. " closed. Switched to Neovim backend #" .. next_terminal.id .. "."
+    )
+  end
+
+  schedule_persist_session()
+  return true
+end
+
 --- Close the terminal pane
 function M.close()
   local active_backend = get_active_backend()
@@ -2710,20 +2760,17 @@ function M.close()
     local terminal = get_current_nvim_terminal()
     if terminal then
       local closed_terminal_id = terminal.id
+      state.suppress_termclose = true
       nvim_terminal.close(terminal)
       remove_nvim_terminal(terminal.id)
       prune_nvim_terminals()
 
-      local next_terminal = get_current_nvim_terminal()
-      if next_terminal then
-        if show_nvim_terminal(next_terminal) then
-          schedule_persist_session()
-          notify(
-            "Terminal #" .. tostring(closed_terminal_id) .. " closed. Switched to Neovim backend #" .. next_terminal.id .. "."
-          )
-          return
-        end
+      if show_remaining_nvim_terminal(closed_terminal_id) then
+        state.suppress_termclose = false
+        return
       end
+
+      state.suppress_termclose = false
     end
   end
 
@@ -3505,6 +3552,33 @@ local function setup_autocmds()
       if state.input_win or state.sidebar_win or #state.nvim_terminals > 0 then
         schedule_guard_enforcement()
       end
+    end,
+  })
+
+  vim.api.nvim_create_autocmd("TermClose", {
+    group = group,
+    callback = function(args)
+      if state.suppress_termclose then
+        return
+      end
+
+      local terminal = find_nvim_terminal_by_buf(args.buf)
+      if not terminal then
+        return
+      end
+
+      local closed_terminal_id = terminal.id
+      state.suppress_termclose = true
+      nvim_terminal.close(terminal)
+      remove_nvim_terminal(closed_terminal_id)
+      prune_nvim_terminals()
+
+      if not show_remaining_nvim_terminal(closed_terminal_id) then
+        close_nvim_sidebar()
+        schedule_persist_session()
+      end
+
+      state.suppress_termclose = false
     end,
   })
 
