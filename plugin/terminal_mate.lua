@@ -13,7 +13,7 @@ end, { desc = "Open terminal_mate split pane" })
 
 vim.api.nvim_create_user_command("TerminalMateMode", function()
   require("terminal_mate").open()
-end, { desc = "Open terminal_mate input mode" })
+end, { desc = "Enable TerminalMate mode" })
 
 vim.api.nvim_create_user_command("TerminalMateNew", function()
   require("terminal_mate").new_terminal()
@@ -41,7 +41,7 @@ end, { desc = "Close terminal_mate split pane" })
 
 vim.api.nvim_create_user_command("TerminalMateToggle", function()
   require("terminal_mate").toggle()
-end, { desc = "Toggle terminal_mate split pane" })
+end, { desc = "Toggle TerminalMate mode" })
 
 vim.api.nvim_create_user_command("TerminalMateSend", function(opts)
   if opts.args and opts.args ~= "" then

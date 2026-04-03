@@ -5,7 +5,7 @@
 ---@field shell string|nil Shell to use in the terminal pane (nil = default shell)
 ---@field close_on_exit boolean Close terminal pane when nvim exits
 ---@field auto_scroll boolean Auto scroll terminal pane to bottom after sending
----@field clear_input boolean Clear the input buffer after sending
+---@field clear_input boolean Clear the current command block from the text buffer after sending
 ---@field shell_integration TerminalMateShellIntegration
 ---@field persistence TerminalMatePersistence
 ---@field keymap TerminalMateKeymap
@@ -18,11 +18,11 @@
 ---@field send_line_keep string Send the current command block without clearing it in normal/insert mode
 ---@field send_visual string Send visual selection
 ---@field open string Open terminal pane
----@field mate_mode string Open terminal_mate input mode
+---@field mate_mode string Enable TerminalMate mode
 ---@field new_terminal string Create a new terminal instance
 ---@field hide string Hide the current terminal pane without killing it
 ---@field close string Close terminal pane
----@field toggle string Toggle terminal pane
+---@field toggle string Toggle TerminalMate mode
 ---@field clear string Send clear to terminal
 ---@field interrupt string Send Ctrl-C to terminal
 ---@field prev_terminal string Switch to the previous managed terminal
@@ -39,11 +39,11 @@
 ---@field completion_prev string Select the previous completion item in insert mode
 
 ---@class TerminalMateBuffer
----@field filetype string Filetype for the input buffer
----@field bufname string Name for the input buffer
+---@field filetype string Legacy dedicated input buffer filetype (no longer used)
+---@field bufname string Legacy dedicated input buffer name (no longer used)
 
 ---@class TerminalMateCompletion
----@field enabled boolean Enable native zsh completion in the TerminalMate input buffer
+---@field enabled boolean Enable native zsh completion in TerminalMate mode text buffers
 ---@field trigger string Completion trigger mode: "auto" or "tab"
 ---@field debounce_ms number Delay before refreshing automatic completion suggestions
 ---@field shell string|nil Zsh executable to use for completion (nil = auto-detect)
@@ -52,7 +52,7 @@
 ---@field enabled boolean Enable shell integration for TerminalMate-managed Neovim terminals when supported
 
 ---@class TerminalMatePersistence
----@field enabled boolean Persist TerminalMate terminals and input buffer content across sessions
+---@field enabled boolean Persist TerminalMate terminal list across sessions
 ---@field path string|nil Path to the session state file (nil = stdpath("state") .. "/terminal_mate/session.json")
 ---@field debounce_ms number Delay before writing state updates to disk
 

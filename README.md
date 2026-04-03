@@ -9,15 +9,16 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Neovim-first backend**: `backend = "auto"` prefers Neovim's built-in terminal and falls back to tmux when needed.
 - **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and can also live in a dedicated TerminalMate tab workspace.
 - **Multiple terminal instances**: Create multiple managed Neovim terminals and keep sending to the most recently active one.
-- **Session persistence by default**: TerminalMate restores managed Neovim terminal instances and the input buffer content on the next open.
+- **Session persistence by default**: TerminalMate restores the managed Neovim terminal list on the next open.
 - **Slim terminal list sidebar**: Managed Neovim terminals get a compact right-side list with `#id + cwd` tail labels, active-row emphasis, and click/`Enter` switching.
-- **Guarded dedicated windows**: Input, terminal, and sidebar windows automatically restore their intended buffers if another command steals the window.
+- **Guarded terminal/sidebar windows**: Terminal and sidebar windows automatically restore their intended buffers if another command steals the window.
 - **Cursor-local command blocks**: Press `Ctrl+S` to send only the non-empty command block under the cursor; blank lines separate blocks.
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
-- **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
-- **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
-- **Zsh-like Autosuggestions**: Show history-backed ghost text in the input buffer and accept it with `<Right>`.
-- **Native Zsh Completion**: Completion suggestions open automatically in the input buffer through a real background zsh session, with an option to switch back to `<Tab>`-triggered completion.
+- **TerminalMate Mode in regular buffers**: Toggle TerminalMate mode in any modifiable text buffer and use shell-style insert-mode actions there.
+- **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the current text buffer.
+- **Zsh History Integration**: Browse and search your zsh/bash history directly from the current text buffer while TerminalMate mode is enabled.
+- **Zsh-like Autosuggestions**: Show history-backed ghost text in the current text buffer and accept it with `<Right>`.
+- **Native Zsh Completion**: Completion suggestions open automatically in TerminalMate mode text buffers through a real background zsh session, with an option to switch back to `<Tab>`-triggered completion.
 - **Cheatsheet Templates**: Search user-defined command templates by description, expand `{{variables}}` into jumpable placeholders, and drive placeholder values from shell commands or static item lists.
 - **Zsh Shell Integration**: TerminalMate-managed Neovim terminals load a zsh integration layer that emits `OSC 7` and `OSC 133`, keeping cwd and prompt/command boundaries in sync.
 - **Multi-line Commands**: Write complex multi-line scripts in the buffer and send them as command blocks.
@@ -26,7 +27,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ## Requirements
 
 - [Neovim](https://neovim.io/) >= 0.8
-- [zsh](https://www.zsh.org/) is recommended for native TerminalMate completion inside the input buffer
+- [zsh](https://www.zsh.org/) is recommended for native TerminalMate completion in TerminalMate mode
 - [tmux](https://github.com/tmux/tmux) is optional and only required when using the tmux backend or fallback path
 - Neovim terminal shell integration requires [Neovim](https://neovim.io/) >= 0.10 and currently applies to TerminalMate-managed `zsh` shells on the Neovim backend
 
@@ -46,27 +47,28 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ## Usage
 
 1. Run `:TerminalMateOpen` or press `<leader>to` to open the terminal pane only.
-2. Run `:TerminalMateMode` or press `<leader>tm` to enter the dedicated TerminalMate input buffer.
+2. Run `:TerminalMateToggle` or press `<leader>tt` to toggle TerminalMate mode in the current text buffer. `:TerminalMateMode` / `<leader>tm` still enable the mode directly.
 3. With the default `auto` backend, the latest managed Neovim terminal opens below the editor. If none exists, TerminalMate creates one.
 4. When the Neovim backend is visible, a compact terminal list appears on the right side of the terminal split.
 5. The active row is emphasized with a stronger highlight and a slim left marker.
 6. Click a terminal row or press `Enter` on it to switch to that managed terminal.
-7. Type your command(s) in the input buffer.
+7. Type your command(s) in any modifiable text buffer while TerminalMate mode is enabled.
 8. Matching history entries appear as ghost text at the cursor, similar to zsh autosuggestions.
 9. Press `<Right>` to accept the current history suggestion; zsh-backed completion opens automatically as you type and refreshes after edits like backspace.
 10. Use `<Tab>` / `<S-Tab>` or `<Up>` / `<Down>` to move through the completion menu when it is visible; press `<Enter>` to confirm the current item.
 11. Switch to `completion.trigger = "tab"` if you prefer manual completion.
 12. Common insert-mode editing keys follow command-line habits such as `<C-a>`, `<C-e>`, `<C-w>`, `<C-u>`, `<C-k>`, and `<M-b>` / `<M-f>`.
-13. Press `Ctrl+G` to search cheatsheets by description, then expand a template into jumpable placeholders inside the input buffer.
+13. Press `Ctrl+G` to search cheatsheets by description, then expand a template into jumpable placeholders inside the current text buffer.
 14. Use `<Tab>` / `<S-Tab>` to jump between cheatsheet placeholders when no popup menu is visible.
-15. Press `Ctrl+S` to send the command block under the cursor and clear it from the input buffer.
-16. Press `Ctrl+J` to send the command block under the cursor and keep it in the input buffer.
+15. Press `Ctrl+S` to send the command block under the cursor and clear it from the current text buffer.
+16. Press `Ctrl+J` to send the command block under the cursor and keep it in the current text buffer.
 17. Blank lines separate blocks, so multi-command buffers can be staged and sent block by block.
 18. `clear_input` still controls the default behavior of `:TerminalMateSend` and `require("terminal_mate").send_buffer()`.
 
 ### Managing Multiple Terminals
 
 - Run `:TerminalMateNew` or press `<leader>tn` to create a new managed Neovim terminal instance.
+- `:TerminalMateNew` / `<leader>tn` only create/show a new terminal and do not switch you into a dedicated TerminalMate buffer.
 - Run `:TerminalMateNextTerminal` / `:TerminalMatePrevTerminal` to cycle between managed Neovim terminal instances.
 - Run `:TerminalMateSwitch {id}` to jump directly to a managed Neovim terminal by id.
 - Run `:TerminalMateHide` or press `<leader>th` to hide the current managed Neovim terminal without killing it.
@@ -90,7 +92,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 
 ### Native Zsh Completion
 
-- Completion suggestions open automatically inside the TerminalMate input buffer as you type.
+- Completion suggestions open automatically inside TerminalMate mode text buffers as you type.
 - Backspacing or other in-buffer edits refresh the completion candidates after a short debounce.
 - Completion follows the current working directory of the active TerminalMate shell, preferring live zsh shell-integration updates on the Neovim backend and falling back to process cwd detection when needed.
 - In tmux mode, completion prefers the pane currently adjacent to Neovim, so switching terminal panes updates later path suggestions too.
@@ -106,7 +108,7 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 ### Cheatsheets
 
 - Cheatsheets live in a Lua file that returns a list of entries. By default the file is created at `stdpath("config") .. "/terminal_mate_cheatsheets.lua"`.
-- Search cheatsheets with `:TerminalMateCheatsheetSearch` or the default `Ctrl+G` keymap while you are in the input buffer.
+- Search cheatsheets with `:TerminalMateCheatsheetSearch` or the default `Ctrl+G` keymap while TerminalMate mode is enabled in a text buffer.
 - Search matches run against each entry's `description`, so descriptions should be written for lookup, not just display.
 - Template variables use `{{name}}` syntax. After a cheatsheet is inserted, `<Tab>` / `<S-Tab>` jump between those variable placeholders.
 - Placeholder completion is fuzzy and local to the active variable. If the variable defines a `command`, TerminalMate runs it in the active shell cwd and fuzzy-filters the resulting lines.
@@ -152,14 +154,14 @@ return {
 | Command | Description |
 |---------|-------------|
 | `:TerminalMateOpen` | Open the terminal pane |
-| `:TerminalMateMode` | Enter terminal_mate input mode |
+| `:TerminalMateMode` | Enable TerminalMate mode in the current text buffer |
 | `:TerminalMateNew` | Create a new terminal instance |
 | `:TerminalMateSwitch {id}` | Switch to a specific managed terminal instance |
 | `:TerminalMateNextTerminal` | Switch to the next managed terminal instance |
 | `:TerminalMatePrevTerminal` | Switch to the previous managed terminal instance |
 | `:TerminalMateHide` | Hide the current managed Neovim terminal without killing it |
 | `:TerminalMateClose` | Close the terminal pane |
-| `:TerminalMateToggle` | Toggle the current terminal pane visibility |
+| `:TerminalMateToggle` | Toggle TerminalMate mode |
 | `:TerminalMateSend [cmd]` | Send current buffer or `[cmd]` to the terminal |
 | `:TerminalMateSendSelection` | Send the current visual selection to the active backend |
 | `:TerminalMateClear` | Clear the terminal screen |
@@ -173,7 +175,7 @@ return {
 
 ## Default Keymaps
 
-Keymaps active in the `terminal_mate` input buffer:
+Keymaps active in modifiable text buffers while TerminalMate mode is enabled:
 
 | Keymap | Mode | Description |
 |--------|------|-------------|
@@ -209,14 +211,14 @@ Global keymaps:
 |--------|------|-------------|
 | `<leader>ts` | Visual | Send selected text to terminal from any buffer |
 | `<leader>to` | Normal | Open the terminal pane |
-| `<leader>tm` | Normal | Enter terminal_mate input mode |
+| `<leader>tm` | Normal | Enable TerminalMate mode |
 | `<leader>tn` | Normal | Create a new terminal instance |
 | `<leader>t[` | Normal | Switch to the previous terminal instance |
 | `<leader>t]` | Normal | Switch to the next terminal instance |
 | `<leader>t1` ... `<leader>t9` | Normal | Jump directly to terminal `#1` ... `#9` |
 | `<leader>th` | Normal | Hide the current terminal pane |
 | `<leader>tc` | Normal | Close the terminal pane |
-| `<leader>tt` | Normal | Toggle terminal pane visibility (without entering input mode) |
+| `<leader>tt` | Normal | Toggle TerminalMate mode |
 | `<leader>te` | Normal | Edit the cheatsheet file |
 | `<leader>ta` | Normal | Create a cheatsheet entry |
 
@@ -241,7 +243,7 @@ require("terminal_mate").setup({
   shell_integration = {
     enabled = true,
   },
-  -- Persist managed Neovim terminals and input buffer text across sessions.
+  -- Persist managed Neovim terminal list across sessions.
   persistence = {
     enabled = true,
     -- nil = stdpath("state") .. "/terminal_mate/session.json"
@@ -276,6 +278,7 @@ require("terminal_mate").setup({
   },
 
   buffer = {
+    -- Legacy dedicated-input-buffer settings retained for backward compatibility.
     filetype = "terminal_mate",
     bufname = "[TerminalMate]",
   },
@@ -306,8 +309,8 @@ require("terminal_mate").setup({
 
 ### Layout Modes
 
-- `split`: keep TerminalMate in the current tab and reuse the current window for the input buffer.
-- `tab`: open TerminalMate in a dedicated tab workspace, with the input/terminal/sidebar windows guarded against accidental buffer replacement.
+- `split`: keep TerminalMate in the current tab and attach TerminalMate mode to regular text buffers.
+- `tab`: open TerminalMate terminals in a dedicated tab workspace while regular text buffers provide the input surface.
 
 ## How History Works
 

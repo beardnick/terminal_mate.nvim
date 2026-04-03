@@ -36,19 +36,18 @@ local state = {
   next_terminal_id = 0,      -- monotonic id for Neovim terminals
   activity_seq = 0,          -- monotonic sequence for latest-active selection
   nvim_pane_id = nil,        -- tmux pane id where nvim runs
-  input_buf = nil,           -- buffer number for the command input
-  input_win = nil,           -- dedicated input window id
+  input_buf = nil,           -- current text buffer using TerminalMate input features
+  input_win = nil,           -- workspace anchor window id for tab layout
   workspace_tab = nil,       -- dedicated TerminalMate tabpage when layout="tab"
   previous_tab = nil,        -- previously focused tab before entering TerminalMate workspace
-  is_open = false,           -- true when the dedicated TerminalMate input UI is active
-  autosuggestion = nil,      -- active history-backed autosuggestion for the input buffer
+  is_open = false,           -- true when TerminalMate mode is enabled
+  autosuggestion = nil,      -- active history-backed autosuggestion for the current input buffer
   accepted_suggestion = nil, -- last accepted autosuggestion text for exact sends
   history = {},              -- command history (loaded from zsh + session)
   history_index = 0,         -- 0 = not browsing, 1 = most recent
   guard_restoring = false,   -- true while restoring dedicated window buffers
   guard_scheduled = false,   -- true while a restore pass is already queued
   session_restored = false,  -- true after persisted session restore has been attempted
-  restored_input = false,    -- true after persisted input text has been restored once
   persisted_session = nil,   -- decoded persisted session payload
   persist_generation = 0,    -- debounce generation for persistence writes
   persist_suspended = false, -- true while restoring persisted state
@@ -245,23 +244,13 @@ local function build_persisted_session_payload()
     end
   end
 
-  local input_text = ""
-  if state.input_buf and vim.api.nvim_buf_is_valid(state.input_buf) then
-    local lines = vim.api.nvim_buf_get_lines(state.input_buf, 0, -1, false)
-    input_text = #lines > 0 and table.concat(lines, "\n") or ""
-  elseif state.persisted_session and type(state.persisted_session.input_text) == "string" then
-    input_text = state.persisted_session.input_text
-  end
-
   return {
-    version = 2,
-    input_text = input_text,
+    version = 3,
     terminal_ids = terminal_ids,
     nvim_terminal_count = #terminals,
     current_terminal_id = state.current_terminal_id,
     current_terminal_index = current_index,
     next_terminal_id = state.next_terminal_id,
-    is_open = state.is_open,
   }
 end
 
@@ -410,12 +399,16 @@ local function ensure_workspace_tab()
     return workspace
   end
 
+  local source_buf = remember_current_input_buf()
   state.previous_tab = vim.api.nvim_get_current_tabpage()
   vim.cmd("tabnew")
   workspace = vim.api.nvim_get_current_tabpage()
   state.workspace_tab = workspace
   state.sidebar_win = nil
   state.input_win = vim.api.nvim_get_current_win()
+  if source_buf and vim.api.nvim_buf_is_valid(source_buf) then
+    pcall(vim.api.nvim_win_set_buf, state.input_win, source_buf)
+  end
   return workspace
 end
 
@@ -442,16 +435,6 @@ end
 
 ---@param win number
 local function apply_input_window_options(win)
-  vim.wo[win].signcolumn = "no"
-  vim.wo[win].number = false
-  vim.wo[win].relativenumber = false
-  pcall(function()
-    vim.wo[win].winfixbuf = true
-  end)
-  pcall(function()
-    vim.wo[win].winfixheight = true
-  end)
-
   if config.options.completion.enabled then
     vim.o.completeopt = INPUT_COMPLETEOPT
   end
@@ -465,6 +448,9 @@ local send_to_target
 local clear_input_autosuggestion
 local render_input_autosuggestion
 local setup_input_buffer_autocmds
+local is_terminal_mate_input_buffer
+local remember_current_input_buf
+local delete_input_buffer_keymaps
 local feed_insert_keys
 
 local function refresh_completion_state(buf, win)
@@ -944,9 +930,6 @@ local function set_buffer_text(buf, text)
   cheatsheets.clear_active(buf)
   local lines = split_buffer_text(text)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  if buf == state.input_buf then
-    schedule_persist_session()
-  end
   return lines
 end
 
@@ -1019,9 +1002,6 @@ local function replace_input_range(buf, win, start_col, end_col, replacement)
   vim.api.nvim_win_set_cursor(win, { ctx.line_nr, start_col + #replacement })
   state.history_index = 0
   refresh_input_buffer_state(buf, win)
-  if buf == state.input_buf then
-    schedule_persist_session()
-  end
 end
 
 ---@param win number
@@ -1180,10 +1160,6 @@ setup_input_buffer_autocmds = function(buf)
         render_input_autosuggestion(buf, win)
         cheatsheets.refresh(buf, win)
 
-        if args.event == "TextChangedI" or args.event == "TextChanged" then
-          schedule_persist_session()
-        end
-
         if args.event == "TextChangedI" then
           refresh_completion_state(buf, win)
         end
@@ -1209,33 +1185,29 @@ setup_input_buffer_autocmds = function(buf)
       if state.input_buf == buf then
         state.input_buf = nil
       end
-      schedule_persist_session()
     end,
   })
 end
 
---- Create or get the input buffer
+--- Get or attach the current text buffer as the input buffer
 ---@return number bufnr
 local function get_or_create_input_buf()
-  if state.input_buf and vim.api.nvim_buf_is_valid(state.input_buf) then
+  if is_terminal_mate_input_buffer(state.input_buf) then
+    if state.is_open then
+      setup_input_buffer_autocmds(state.input_buf)
+      M._setup_buffer_keymaps(state.input_buf)
+    end
     return state.input_buf
   end
 
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_buf_set_name(buf, config.options.buffer.bufname)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].filetype = config.options.buffer.filetype
-  vim.bo[buf].swapfile = false
-  vim.bo[buf].bufhidden = "hide"
-  vim.api.nvim_buf_set_option(buf, "syntax", "sh")
+  local buf = remember_current_input_buf()
+  if not buf then
+    return nil
+  end
 
-  state.input_buf = buf
-  setup_input_buffer_autocmds(buf)
-
-  if not state.restored_input and state.persisted_session and type(state.persisted_session.input_text) == "string" then
-    local lines = split_buffer_text(state.persisted_session.input_text)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    state.restored_input = true
+  if state.is_open then
+    setup_input_buffer_autocmds(buf)
+    M._setup_buffer_keymaps(buf)
   end
 
   if config.options.completion.enabled then
@@ -1245,12 +1217,111 @@ local function get_or_create_input_buf()
   return buf
 end
 
+---@param buf number
+local function attach_input_buffer(buf)
+  if not state.is_open or not is_terminal_mate_input_buffer(buf) then
+    return
+  end
+
+  state.input_buf = buf
+  setup_input_buffer_autocmds(buf)
+  M._setup_buffer_keymaps(buf)
+
+  local win = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+    render_input_autosuggestion(buf, win)
+    cheatsheets.refresh(buf, win)
+    refresh_completion_state(buf, win)
+  end
+
+  if config.options.completion.enabled then
+    zsh_completion.prime()
+  end
+end
+
+---@param buf number
+local function detach_input_buffer(buf)
+  if not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  clear_input_autosuggestion(buf)
+  cheatsheets.clear_active(buf)
+  if config.options.completion.enabled then
+    zsh_completion.cancel_auto_complete()
+  end
+
+  local group_name = "TerminalMateInput" .. buf
+  pcall(vim.api.nvim_del_augroup_by_name, group_name)
+  vim.b[buf].terminal_mate_autosuggest_ready = nil
+  delete_input_buffer_keymaps(buf)
+end
+
+local function attach_all_input_buffers()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if is_terminal_mate_input_buffer(buf) then
+      setup_input_buffer_autocmds(buf)
+      M._setup_buffer_keymaps(buf)
+    end
+  end
+
+  remember_current_input_buf()
+  if state.input_buf then
+    attach_input_buffer(state.input_buf)
+  end
+end
+
+local function detach_all_input_buffers()
+  for _, buf in ipairs(vim.api.nvim_list_bufs()) do
+    if vim.api.nvim_buf_is_valid(buf) and vim.b[buf].terminal_mate_autosuggest_ready then
+      detach_input_buffer(buf)
+    end
+  end
+
+  if is_terminal_mate_input_buffer(vim.api.nvim_get_current_buf()) then
+    state.input_buf = vim.api.nvim_get_current_buf()
+  elseif not is_terminal_mate_input_buffer(state.input_buf) then
+    state.input_buf = nil
+  end
+end
+
 ---@param buf number|nil
 ---@return boolean
 local function is_managed_terminal_buffer(buf)
   return buf ~= nil
     and vim.api.nvim_buf_is_valid(buf)
     and vim.b[buf].terminal_mate_managed == true
+end
+
+---@param buf number|nil
+---@return boolean
+is_terminal_mate_input_buffer = function(buf)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+
+  if buf == state.sidebar_buf or is_managed_terminal_buffer(buf) then
+    return false
+  end
+
+  local buftype = vim.bo[buf].buftype
+  return vim.bo[buf].modifiable and (buftype == "" or buftype == "acwrite")
+end
+
+---@return number|nil
+remember_current_input_buf = function()
+  local buf = vim.api.nvim_get_current_buf()
+  if is_terminal_mate_input_buffer(buf) then
+    state.input_buf = buf
+    return buf
+  end
+
+  if is_terminal_mate_input_buffer(state.input_buf) then
+    return state.input_buf
+  end
+
+  state.input_buf = nil
+  return nil
 end
 
 ---@return number|nil
@@ -1306,10 +1377,15 @@ local function ensure_workspace_input_window()
     return nil
   end
 
-  local input_buf = get_or_create_input_buf()
   local input_win = normalize_input_window()
   if input_win and window_in_tabpage(input_win, workspace) then
-    pcall(vim.api.nvim_win_set_buf, input_win, input_buf)
+    local current_buf = vim.api.nvim_win_get_buf(input_win)
+    if is_terminal_mate_input_buffer(current_buf) then
+      state.input_buf = current_buf
+      if state.is_open then
+        attach_input_buffer(current_buf)
+      end
+    end
     apply_input_window_options(input_win)
     return input_win
   end
@@ -1344,7 +1420,18 @@ local function ensure_workspace_input_window()
   end
 
   state.input_win = input_win
-  pcall(vim.api.nvim_win_set_buf, input_win, input_buf)
+  local current_buf = vim.api.nvim_win_get_buf(input_win)
+  if is_terminal_mate_input_buffer(current_buf) then
+    state.input_buf = current_buf
+    if state.is_open then
+      attach_input_buffer(current_buf)
+    end
+  else
+    local input_buf = get_or_create_input_buf()
+    if input_buf then
+      pcall(vim.api.nvim_win_set_buf, input_win, input_buf)
+    end
+  end
   apply_input_window_options(input_win)
   return input_win
 end
@@ -1361,6 +1448,11 @@ end
 ---@return number|nil
 local function show_input_buffer()
   local buf = get_or_create_input_buf()
+  if not buf then
+    notify("TerminalMate mode needs a modifiable text buffer.", vim.log.levels.WARN)
+    return nil
+  end
+
   local win = nil
 
   if use_tab_layout() then
@@ -1370,13 +1462,36 @@ local function show_input_buffer()
     end
     vim.api.nvim_set_current_tabpage(vim.api.nvim_win_get_tabpage(win))
     vim.api.nvim_set_current_win(win)
+    buf = remember_current_input_buf() or buf
   else
-    vim.api.nvim_set_current_buf(buf)
-    win = vim.api.nvim_get_current_win()
+    win = nil
+    for _, candidate in ipairs(vim.api.nvim_list_wins()) do
+      if is_normal_window(candidate) and vim.api.nvim_win_get_buf(candidate) == buf then
+        win = candidate
+        break
+      end
+    end
+
+    if win then
+      vim.api.nvim_set_current_win(win)
+    else
+      win = vim.api.nvim_get_current_win()
+      local current_buf = vim.api.nvim_win_get_buf(win)
+      if not is_terminal_mate_input_buffer(current_buf) then
+        local ok = pcall(vim.cmd, "aboveleft split")
+        if ok then
+          win = vim.api.nvim_get_current_win()
+        end
+      end
+      if vim.api.nvim_win_get_buf(win) ~= buf then
+        pcall(vim.api.nvim_set_current_buf, buf)
+      end
+    end
+
     state.input_win = win
   end
 
-  M._setup_buffer_keymaps(buf)
+  attach_input_buffer(buf)
 
   if config.options.completion.enabled then
     zsh_completion.prime()
@@ -1438,11 +1553,6 @@ local function enforce_guarded_windows()
     return
   end
 
-  local input_win = normalize_input_window()
-  if input_win and state.input_buf and vim.api.nvim_buf_is_valid(state.input_buf) then
-    restore_guarded_window(input_win, state.input_buf, "input")
-  end
-
   if state.sidebar_win and not vim.api.nvim_win_is_valid(state.sidebar_win) then
     state.sidebar_win = nil
     state.sidebar_terminal_ids = {}
@@ -1484,7 +1594,7 @@ end
 ---@return table|nil
 local function get_buffer_text()
   local buf = vim.api.nvim_get_current_buf()
-  if buf == state.input_buf then
+  if state.is_open and is_terminal_mate_input_buffer(buf) then
     sync_accepted_suggestion(buf)
   end
 
@@ -2429,9 +2539,8 @@ local function clear_buffer(range, should_clear)
   local target_text = vim.api.nvim_buf_get_lines(buf, target_line - 1, target_line, false)[1] or ""
   vim.api.nvim_win_set_cursor(win, { target_line, math.min(vim.api.nvim_win_get_cursor(win)[2], #target_text) })
 
-  if buf == state.input_buf then
+  if is_terminal_mate_input_buffer(buf) then
     refresh_input_buffer_state(buf, win)
-    schedule_persist_session()
   end
 end
 
@@ -2592,9 +2701,10 @@ local function ensure_terminal_visible()
   return backend, target
 end
 
---- Open terminal pane only (do not enter terminal_mate input mode)
+--- Open terminal pane only (do not toggle TerminalMate mode)
 function M.open_pane()
   ensure_history_loaded()
+  remember_current_input_buf()
 
   local backend, target = ensure_terminal_visible()
   if not backend then
@@ -2611,9 +2721,13 @@ function M.open_pane()
   end
 end
 
---- Open terminal_mate input mode
+--- Enable TerminalMate mode
 function M.open()
   ensure_history_loaded()
+  if not remember_current_input_buf() then
+    notify("TerminalMate mode needs a modifiable text buffer.", vim.log.levels.WARN)
+    return
+  end
 
   local backend, target = ensure_terminal_visible()
   if not backend then
@@ -2623,7 +2737,7 @@ function M.open()
   if not state.is_open then
     state.is_open = true
     apply_minimal_ui()
-    schedule_persist_session()
+    attach_all_input_buffers()
   end
 
   local win = show_input_buffer()
@@ -2632,15 +2746,16 @@ function M.open()
   end
 
   if backend == "tmux" then
-    notify("TerminalMate mode opened (" .. target .. ", tmux backend)")
+    notify("TerminalMate mode enabled (" .. target .. ", tmux backend).")
   else
-    notify("TerminalMate mode opened (Neovim backend #" .. target.id .. ")")
+    notify("TerminalMate mode enabled (Neovim backend #" .. target.id .. ").")
   end
 end
 
 --- Create and show a new terminal instance
 function M.new_terminal()
   ensure_history_loaded()
+  remember_current_input_buf()
 
   local backend = config.options.backend == "tmux" and "tmux" or nil
   local target = nil
@@ -2674,17 +2789,6 @@ function M.new_terminal()
 
   if backend ~= "nvim" then
     close_nvim_sidebar()
-  end
-
-  if not state.is_open then
-    state.is_open = true
-    apply_minimal_ui()
-    schedule_persist_session()
-  end
-
-  local win = show_input_buffer()
-  if not win then
-    return
   end
 
   if backend == "tmux" then
@@ -2745,12 +2849,8 @@ end
 function M.close()
   local active_backend = get_active_backend()
   if not active_backend then
-    if state.is_open then
-      state.is_open = false
-      restore_ui()
-    end
     close_nvim_sidebar()
-    if use_tab_layout() then
+    if use_tab_layout() and not state.is_open then
       close_workspace_tab()
     else
       state.input_win = nil
@@ -2781,10 +2881,8 @@ function M.close()
   end
 
   state.backend = nil
-  state.is_open = false
   close_nvim_sidebar()
-  restore_ui()
-  if use_tab_layout() then
+  if use_tab_layout() and not state.is_open then
     close_workspace_tab()
   else
     state.input_win = nil
@@ -2794,26 +2892,20 @@ function M.close()
   notify("Terminal pane closed.")
 end
 
---- Toggle terminal pane visibility (without entering terminal_mate input mode)
+--- Toggle TerminalMate mode for regular text buffers
 function M.toggle()
-  local active_backend = get_active_backend()
-  if active_backend == "nvim" then
-    local terminal = get_current_nvim_terminal()
-    if terminal and terminal.win and vim.api.nvim_win_is_valid(terminal.win) then
-      M.hide()
-      return
-    end
+  if state.is_open then
     state.is_open = false
-    M.open_pane()
+    detach_all_input_buffers()
+    restore_ui()
+    if use_tab_layout() and not has_nvim_terminal() and not has_tmux_terminal() then
+      close_workspace_tab()
+    end
+    notify("TerminalMate mode disabled.")
     return
   end
 
-  if state.is_open and active_backend then
-    M.close()
-  else
-    state.is_open = false
-    M.open_pane()
-  end
+  M.open()
 end
 
 --- Send the command block under the cursor to the terminal, keep current mode
@@ -2850,7 +2942,7 @@ function M.send_visual(visual_type)
   add_to_history(text)
   send_to_target(backend, target, text)
 
-  if config.options.clear_input and vim.api.nvim_get_current_buf() == state.input_buf then
+  if config.options.clear_input and is_terminal_mate_input_buffer(vim.api.nvim_get_current_buf()) then
     local start_pos = vim.fn.getpos("'<")
     local end_pos = vim.fn.getpos("'>")
     local start_line = start_pos[2]
@@ -3001,13 +3093,13 @@ function M.history_next()
   end
 end
 
---- Accept the current autosuggestion into the input buffer.
+--- Accept the current autosuggestion into the current text buffer.
 ---@return boolean
 function M.accept_suggestion()
   local buf = vim.api.nvim_get_current_buf()
   local win = vim.api.nvim_get_current_win()
 
-  if buf ~= state.input_buf or not vim.api.nvim_win_is_valid(win) then
+  if not state.is_open or not is_terminal_mate_input_buffer(buf) or not vim.api.nvim_win_is_valid(win) then
     return false
   end
 
@@ -3089,7 +3181,7 @@ function M.history_search()
     return
   end
 
-  local caller_buf = state.input_buf
+  local caller_buf = remember_current_input_buf()
   expand_nvim_pane_for_search()
 
   local all_items = {}
@@ -3269,7 +3361,7 @@ end
 
 function M.cheatsheet_search()
   M.open()
-  local buf = state.input_buf
+  local buf = remember_current_input_buf()
   local win = vim.api.nvim_get_current_win()
   if not buf or not vim.api.nvim_buf_is_valid(buf) then
     return
@@ -3330,8 +3422,57 @@ function M.debug_completion_context()
   notify(vim.inspect(M.get_completion_debug_state()))
 end
 
---- Set up buffer-local keymaps for the input buffer
+--- Set up buffer-local keymaps for a TerminalMate mode text buffer
 ---@param buf number
+delete_input_buffer_keymaps = function(buf)
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+
+  local keymap = config.options.keymap
+  local entries = {
+    { "n", keymap.send_line },
+    { "n", keymap.send_line_keep },
+    { "v", keymap.send_visual },
+    { "i", keymap.send_line },
+    { "i", keymap.send_line_keep },
+    { "i", "<C-a>" },
+    { "i", "<C-e>" },
+    { "i", "<C-b>" },
+    { "i", "<C-f>" },
+    { "i", "<M-b>" },
+    { "i", "<M-f>" },
+    { "i", "<C-u>" },
+    { "i", "<C-k>" },
+    { "i", "<C-w>" },
+    { "i", "<C-d>" },
+    { "n", keymap.new_terminal },
+    { "n", keymap.hide },
+    { "n", keymap.history_prev },
+    { "n", keymap.history_next },
+    { "i", keymap.history_prev },
+    { "i", keymap.history_next },
+    { "n", keymap.history_search },
+    { "i", keymap.history_search },
+    { "n", keymap.cheatsheet_search },
+    { "i", keymap.cheatsheet_search },
+    { "i", keymap.accept_suggestion },
+    { "i", keymap.completion_trigger },
+    { "i", keymap.completion_prev },
+    { "i", "<CR>" },
+    { "n", keymap.clear },
+    { "n", keymap.interrupt },
+  }
+
+  for _, entry in ipairs(entries) do
+    local mode = entry[1]
+    local lhs = entry[2]
+    if lhs and lhs ~= "" then
+      pcall(vim.keymap.del, mode, lhs, { buffer = buf })
+    end
+  end
+end
+
 function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
@@ -3565,6 +3706,12 @@ local function setup_autocmds()
         end
       end
 
+      if state.is_open and is_terminal_mate_input_buffer(args.buf) then
+        attach_input_buffer(args.buf)
+      elseif not state.is_open and is_terminal_mate_input_buffer(args.buf) then
+        state.input_buf = args.buf
+      end
+
       schedule_guard_enforcement()
     end,
   })
@@ -3572,7 +3719,7 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd({ "BufWinEnter", "WinEnter", "TabEnter" }, {
     group = group,
     callback = function()
-      if state.input_win or state.sidebar_win or #state.nvim_terminals > 0 then
+      if state.sidebar_win or #state.nvim_terminals > 0 then
         schedule_guard_enforcement()
       end
     end,
@@ -3623,9 +3770,6 @@ local function setup_autocmds()
     group = group,
     callback = function(args)
       local closed_win = tonumber(args.match)
-      if closed_win and state.input_win == closed_win then
-        state.input_win = nil
-      end
       if closed_win and state.sidebar_win == closed_win then
         state.sidebar_win = nil
         state.sidebar_terminal_ids = {}
@@ -3639,9 +3783,9 @@ local function setup_autocmds()
         end
       end
 
-      if state.sidebar_win or state.input_win or #state.nvim_terminals > 0 then
+      if state.sidebar_win or #state.nvim_terminals > 0 then
         vim.schedule(function()
-          if use_tab_layout() and not normalize_input_window() and (state.is_open or has_nvim_terminal()) then
+          if use_tab_layout() and not normalize_input_window() and has_nvim_terminal() then
             ensure_workspace_input_window()
           end
           if sync_nvim_sidebar then
@@ -3710,7 +3854,6 @@ function M.setup(opts)
   config.setup(opts)
   state.persisted_session = load_persisted_session()
   state.session_restored = false
-  state.restored_input = false
   state.persist_generation = 0
   state.persist_suspended = false
   zsh_completion.setup(vim.tbl_extend("force", {}, config.options.completion, {
@@ -3752,7 +3895,7 @@ function M.setup(opts)
 
   vim.keymap.set("n", keymap.mate_mode or "<leader>tm", function()
     M.open()
-  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Open terminal_mate input mode" }))
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Enable TerminalMate mode" }))
 
   vim.keymap.set("n", keymap.new_terminal, function()
     M.new_terminal()
@@ -3768,7 +3911,7 @@ function M.setup(opts)
 
   vim.keymap.set("n", keymap.toggle, function()
     M.toggle()
-  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Toggle terminal pane" }))
+  end, vim.tbl_extend("force", gopts, { desc = "TerminalMate: Toggle TerminalMate mode" }))
 
   setup_terminal_switch_keymaps(gopts)
 
