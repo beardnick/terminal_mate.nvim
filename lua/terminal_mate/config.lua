@@ -14,7 +14,7 @@
 ---@field cheatsheets TerminalMateCheatsheets
 
 ---@class TerminalMateKeymap
----@field send_line string Send all buffer content in normal/insert mode
+---@field send_line string Send the current command block in normal/insert mode
 ---@field send_visual string Send visual selection
 ---@field open string Open terminal pane
 ---@field mate_mode string Open terminal_mate input mode

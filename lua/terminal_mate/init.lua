@@ -2219,6 +2219,17 @@ local function restore_persisted_nvim_session(opts)
   end
 end
 
+---@return boolean
+local function has_unrestored_persisted_nvim_terminals()
+  return not state.session_restored
+    and persistence_enabled()
+    and type(state.persisted_session) == "table"
+    and config.options.backend ~= "tmux"
+    and nvim_terminal.is_available()
+    and #state.nvim_terminals == 0
+    and #persisted_terminal_ids() > 0
+end
+
 ---@param opts table|nil
 ---@return table|nil
 local function ensure_nvim_terminal(opts)
@@ -2601,6 +2612,7 @@ function M.new_terminal()
 
   local backend = config.options.backend == "tmux" and "tmux" or nil
   local target = nil
+  local reused_persisted_terminal = false
 
   if backend == "tmux" then
     target = ensure_managed_tmux_pane()
@@ -2608,7 +2620,11 @@ function M.new_terminal()
       return
     end
   else
-    target = ensure_nvim_terminal({ new_terminal = true, show = true })
+    reused_persisted_terminal = has_unrestored_persisted_nvim_terminals()
+    target = ensure_nvim_terminal({
+      new_terminal = not reused_persisted_terminal,
+      show = true,
+    })
     if not target then
       if config.options.backend == "nvim" then
         return
@@ -2641,6 +2657,8 @@ function M.new_terminal()
 
   if backend == "tmux" then
     notify("Terminal pane opened (" .. target .. ", tmux backend)")
+  elseif reused_persisted_terminal then
+    notify("Terminal pane opened (Neovim backend #" .. target.id .. ")")
   else
     notify("New terminal created (Neovim backend #" .. target.id .. ")")
   end

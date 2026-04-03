@@ -176,7 +176,7 @@ Keymaps active in the `terminal_mate` input buffer:
 
 | Keymap | Mode | Description |
 |--------|------|-------------|
-| `<C-s>` | Normal / Insert | Send all buffer content to terminal |
+| `<C-s>` | Normal / Insert | Send the current command block to terminal |
 | `<leader>ts` | Visual | Send visual selection to terminal |
 | `<leader>tn` | Normal | Create a new terminal instance |
 | `<leader>th` | Normal | Hide the current terminal pane |
