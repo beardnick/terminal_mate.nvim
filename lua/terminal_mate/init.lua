@@ -2709,9 +2709,21 @@ function M.close()
   else
     local terminal = get_current_nvim_terminal()
     if terminal then
+      local closed_terminal_id = terminal.id
       nvim_terminal.close(terminal)
       remove_nvim_terminal(terminal.id)
       prune_nvim_terminals()
+
+      local next_terminal = get_current_nvim_terminal()
+      if next_terminal then
+        if show_nvim_terminal(next_terminal) then
+          schedule_persist_session()
+          notify(
+            "Terminal #" .. tostring(closed_terminal_id) .. " closed. Switched to Neovim backend #" .. next_terminal.id .. "."
+          )
+          return
+        end
+      end
     end
   end
 
