@@ -2401,8 +2401,14 @@ local function build_command_blocks(text)
 end
 
 ---@param range table|nil
-local function clear_buffer(range)
-  if not config.options.clear_input or not range then
+---@param should_clear boolean|nil
+local function clear_buffer(range, should_clear)
+  local should_remove = config.options.clear_input
+  if should_clear ~= nil then
+    should_remove = should_clear
+  end
+
+  if not should_remove or not range then
     return
   end
 
@@ -2811,7 +2817,10 @@ function M.toggle()
 end
 
 --- Send the command block under the cursor to the terminal, keep current mode
-function M.send_buffer()
+---@param opts table|nil
+function M.send_buffer(opts)
+  opts = opts or {}
+
   local text, range = get_buffer_text()
   if text == "" then
     return
@@ -2823,7 +2832,7 @@ function M.send_buffer()
 
   add_to_history(text)
   send_to_terminal(text)
-  clear_buffer(range)
+  clear_buffer(range, opts.clear)
 end
 
 --- Send visual selection to terminal
@@ -3326,13 +3335,13 @@ end
 function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
-  local function schedule_send_buffer()
+  local function schedule_send_buffer(send_opts)
     local target_buf = buf
     vim.schedule(function()
       if not vim.api.nvim_buf_is_valid(target_buf) or vim.api.nvim_get_current_buf() ~= target_buf then
         return
       end
-      M.send_buffer()
+      M.send_buffer(send_opts)
     end)
   end
 
@@ -3349,8 +3358,12 @@ function M._setup_buffer_keymaps(buf)
   end
 
   vim.keymap.set("n", keymap.send_line, function()
-    M.send_buffer()
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block" }))
+    M.send_buffer({ clear = true })
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block and clear it" }))
+
+  vim.keymap.set("n", keymap.send_line_keep, function()
+    M.send_buffer({ clear = false })
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block without clearing it" }))
 
   vim.keymap.set("v", keymap.send_visual, function()
     local visual_type = vim.fn.visualmode()
@@ -3363,12 +3376,22 @@ function M._setup_buffer_keymaps(buf)
   vim.keymap.set("i", keymap.send_line, function()
     if config.options.completion.enabled and vim.fn.pumvisible() == 1 then
       zsh_completion.dismiss()
-      schedule_send_buffer()
+      schedule_send_buffer({ clear = true })
       return
     end
 
-    schedule_send_buffer()
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block (insert mode)" }))
+    schedule_send_buffer({ clear = true })
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block and clear it (insert mode)" }))
+
+  vim.keymap.set("i", keymap.send_line_keep, function()
+    if config.options.completion.enabled and vim.fn.pumvisible() == 1 then
+      zsh_completion.dismiss()
+      schedule_send_buffer({ clear = false })
+      return
+    end
+
+    schedule_send_buffer({ clear = false })
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block without clearing it (insert mode)" }))
 
   vim.keymap.set("i", "<C-a>", with_input_context(function(win, ctx)
     vim.api.nvim_win_set_cursor(win, { ctx.line_nr, 0 })

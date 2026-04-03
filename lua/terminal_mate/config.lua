@@ -14,7 +14,8 @@
 ---@field cheatsheets TerminalMateCheatsheets
 
 ---@class TerminalMateKeymap
----@field send_line string Send the current command block in normal/insert mode
+---@field send_line string Send the current command block and clear it in normal/insert mode
+---@field send_line_keep string Send the current command block without clearing it in normal/insert mode
 ---@field send_visual string Send visual selection
 ---@field open string Open terminal pane
 ---@field mate_mode string Open terminal_mate input mode
@@ -89,6 +90,7 @@ M.defaults = {
   },
   keymap = {
     send_line = "<C-s>",
+    send_line_keep = "<C-j>",
     send_visual = "<leader>ts",
     open = "<leader>to",
     mate_mode = "<leader>tm",

@@ -59,9 +59,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 12. Common insert-mode editing keys follow command-line habits such as `<C-a>`, `<C-e>`, `<C-w>`, `<C-u>`, `<C-k>`, and `<M-b>` / `<M-f>`.
 13. Press `Ctrl+G` to search cheatsheets by description, then expand a template into jumpable placeholders inside the input buffer.
 14. Use `<Tab>` / `<S-Tab>` to jump between cheatsheet placeholders when no popup menu is visible.
-15. Press `Ctrl+S` to send the command block under the cursor to the latest active terminal.
-16. Blank lines separate blocks, so multi-command buffers can be staged and sent block by block.
-17. By default the input buffer stays intact after sending; enable `clear_input` if you want the active block removed after each send.
+15. Press `Ctrl+S` to send the command block under the cursor and clear it from the input buffer.
+16. Press `Ctrl+J` to send the command block under the cursor and keep it in the input buffer.
+17. Blank lines separate blocks, so multi-command buffers can be staged and sent block by block.
+18. `clear_input` still controls the default behavior of `:TerminalMateSend` and `require("terminal_mate").send_buffer()`.
 
 ### Managing Multiple Terminals
 
@@ -176,7 +177,8 @@ Keymaps active in the `terminal_mate` input buffer:
 
 | Keymap | Mode | Description |
 |--------|------|-------------|
-| `<C-s>` | Normal / Insert | Send the current command block to terminal |
+| `<C-s>` | Normal / Insert | Send the current command block and clear it |
+| `<C-j>` | Normal / Insert | Send the current command block without clearing it |
 | `<leader>ts` | Visual | Send visual selection to terminal |
 | `<leader>tn` | Normal | Create a new terminal instance |
 | `<leader>th` | Normal | Hide the current terminal pane |
@@ -232,7 +234,8 @@ require("terminal_mate").setup({
   shell = nil,
   -- Close managed tmux panes when exiting Neovim.
   close_on_exit = true,
-  -- Remove the active command block after sending. Disabled by default.
+  -- Default clear behavior for :TerminalMateSend / require("terminal_mate").send_buffer().
+  -- `<C-s>` always clears the active command block, and `<C-j>` always keeps it.
   clear_input = false,
   -- Enable zsh shell integration for TerminalMate-managed Neovim terminals.
   shell_integration = {
@@ -248,6 +251,7 @@ require("terminal_mate").setup({
 
   keymap = {
     send_line = "<C-s>",
+    send_line_keep = "<C-j>",
     send_visual = "<leader>ts",
     open = "<leader>to",
     mate_mode = "<leader>tm",
