@@ -47,6 +47,11 @@ local state = {
   history_index = 0,         -- 0 = not browsing, 1 = most recent
   guard_restoring = false,   -- true while restoring dedicated window buffers
   guard_scheduled = false,   -- true while a restore pass is already queued
+  session_restored = false,  -- true after persisted session restore has been attempted
+  restored_input = false,    -- true after persisted input text has been restored once
+  persisted_session = nil,   -- decoded persisted session payload
+  persist_generation = 0,    -- debounce generation for persistence writes
+  persist_suspended = false, -- true while restoring persisted state
   _saved_nvim_height = nil,  -- saved nvim pane height before search resize
   _saved_ui = nil,           -- saved UI options to restore on close
 }
@@ -101,6 +106,199 @@ end
 ---@param level number|nil
 local function notify(msg, level)
   vim.notify("[TerminalMate] " .. msg, level or vim.log.levels.INFO)
+end
+
+---@return boolean
+local function persistence_enabled()
+  return config.options.persistence and config.options.persistence.enabled
+end
+
+---@return string
+local function session_state_path()
+  local configured = config.options.persistence and config.options.persistence.path or nil
+  if type(configured) == "string" and configured ~= "" then
+    return configured
+  end
+
+  return vim.fs.normalize(vim.fn.stdpath("state") .. "/terminal_mate/session.json")
+end
+
+---@param path string
+---@return boolean
+local function ensure_parent_dir(path)
+  local dir = vim.fn.fnamemodify(path, ":h")
+  if dir == "" then
+    return false
+  end
+
+  local ok = pcall(vim.fn.mkdir, dir, "p")
+  return ok
+end
+
+---@return table|nil
+local function load_persisted_session()
+  if not persistence_enabled() then
+    return nil
+  end
+
+  local path = session_state_path()
+  if vim.fn.filereadable(path) ~= 1 then
+    return nil
+  end
+
+  local ok_read, lines = pcall(vim.fn.readfile, path)
+  if not ok_read or type(lines) ~= "table" then
+    return nil
+  end
+
+  local payload = table.concat(lines, "\n")
+  if payload == "" then
+    return nil
+  end
+
+  local ok_decode, decoded = pcall(vim.fn.json_decode, payload)
+  if not ok_decode or type(decoded) ~= "table" then
+    return nil
+  end
+
+  return decoded
+end
+
+local function sorted_nvim_terminals_snapshot()
+  local terminals = {}
+  for _, terminal in ipairs(state.nvim_terminals) do
+    table.insert(terminals, terminal)
+  end
+
+  table.sort(terminals, function(left, right)
+    return (left.id or 0) < (right.id or 0)
+  end)
+
+  return terminals
+end
+
+---@return integer[]
+local function persisted_terminal_ids()
+  local session = state.persisted_session
+  if type(session) ~= "table" then
+    return {}
+  end
+
+  local ids = {}
+  if type(session.terminal_ids) == "table" then
+    for _, value in ipairs(session.terminal_ids) do
+      local id = math.floor(tonumber(value) or 0)
+      if id > 0 then
+        table.insert(ids, id)
+      end
+    end
+  end
+
+  if #ids == 0 then
+    local count = math.max(math.floor(tonumber(session.nvim_terminal_count) or 0), 0)
+    for index = 1, count do
+      table.insert(ids, index)
+    end
+  end
+
+  table.sort(ids)
+  return ids
+end
+
+---@param ids integer[]
+---@return integer|nil
+local function persisted_current_terminal_id(ids)
+  if #ids == 0 then
+    return nil
+  end
+
+  local session = state.persisted_session
+  if type(session) == "table" then
+    local current_id = math.floor(tonumber(session.current_terminal_id) or 0)
+    if current_id > 0 then
+      for _, id in ipairs(ids) do
+        if id == current_id then
+          return id
+        end
+      end
+    end
+
+    local current_index = math.floor(tonumber(session.current_terminal_index) or 0)
+    if current_index >= 1 and current_index <= #ids then
+      return ids[current_index]
+    end
+  end
+
+  return ids[#ids]
+end
+
+---@return table
+local function build_persisted_session_payload()
+  local terminals = sorted_nvim_terminals_snapshot()
+  local terminal_ids = {}
+  local current_index = 0
+  for index, terminal in ipairs(terminals) do
+    table.insert(terminal_ids, terminal.id)
+    if current_index == 0 and terminal.id == state.current_terminal_id then
+      current_index = index
+    end
+  end
+
+  local input_text = ""
+  if state.input_buf and vim.api.nvim_buf_is_valid(state.input_buf) then
+    local lines = vim.api.nvim_buf_get_lines(state.input_buf, 0, -1, false)
+    input_text = #lines > 0 and table.concat(lines, "\n") or ""
+  elseif state.persisted_session and type(state.persisted_session.input_text) == "string" then
+    input_text = state.persisted_session.input_text
+  end
+
+  return {
+    version = 2,
+    input_text = input_text,
+    terminal_ids = terminal_ids,
+    nvim_terminal_count = #terminals,
+    current_terminal_id = state.current_terminal_id,
+    current_terminal_index = current_index,
+    next_terminal_id = state.next_terminal_id,
+    is_open = state.is_open,
+  }
+end
+
+local function persist_session_now()
+  if not persistence_enabled() or state.persist_suspended then
+    return
+  end
+
+  local payload = build_persisted_session_payload()
+  local path = session_state_path()
+  if not ensure_parent_dir(path) then
+    return
+  end
+
+  local ok_encode, encoded = pcall(vim.fn.json_encode, payload)
+  if not ok_encode or type(encoded) ~= "string" then
+    return
+  end
+
+  pcall(vim.fn.writefile, vim.split(encoded, "\n", { plain = true, trimempty = false }), path)
+  state.persisted_session = payload
+end
+
+local function schedule_persist_session()
+  if not persistence_enabled() or state.persist_suspended then
+    return
+  end
+
+  state.persist_generation = state.persist_generation + 1
+  local generation = state.persist_generation
+  local delay = config.options.persistence.debounce_ms or 0
+
+  vim.defer_fn(function()
+    if generation ~= state.persist_generation then
+      return
+    end
+    persist_session_now()
+  end, delay)
 end
 
 ---@param value number
@@ -262,6 +460,7 @@ local switch_nvim_terminal
 local sync_nvim_sidebar
 local show_nvim_terminal
 local ensure_history_loaded
+local send_to_target
 local clear_input_autosuggestion
 local render_input_autosuggestion
 local setup_input_buffer_autocmds
@@ -719,6 +918,9 @@ local function set_buffer_text(buf, text)
   cheatsheets.clear_active(buf)
   local lines = split_buffer_text(text)
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  if buf == state.input_buf then
+    schedule_persist_session()
+  end
   return lines
 end
 
@@ -791,6 +993,9 @@ local function replace_input_range(buf, win, start_col, end_col, replacement)
   vim.api.nvim_win_set_cursor(win, { ctx.line_nr, start_col + #replacement })
   state.history_index = 0
   refresh_input_buffer_state(buf, win)
+  if buf == state.input_buf then
+    schedule_persist_session()
+  end
 end
 
 ---@param win number
@@ -949,6 +1154,10 @@ setup_input_buffer_autocmds = function(buf)
         render_input_autosuggestion(buf, win)
         cheatsheets.refresh(buf, win)
 
+        if args.event == "TextChangedI" or args.event == "TextChanged" then
+          schedule_persist_session()
+        end
+
         if args.event == "TextChangedI" then
           refresh_completion_state(buf, win)
         end
@@ -974,6 +1183,7 @@ setup_input_buffer_autocmds = function(buf)
       if state.input_buf == buf then
         state.input_buf = nil
       end
+      schedule_persist_session()
     end,
   })
 end
@@ -995,6 +1205,12 @@ local function get_or_create_input_buf()
 
   state.input_buf = buf
   setup_input_buffer_autocmds(buf)
+
+  if not state.restored_input and state.persisted_session and type(state.persisted_session.input_text) == "string" then
+    local lines = split_buffer_text(state.persisted_session.input_text)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    state.restored_input = true
+  end
 
   if config.options.completion.enabled then
     zsh_completion.prime()
@@ -1231,26 +1447,52 @@ local function schedule_guard_enforcement()
   end)
 end
 
---- Get the current buffer as a command block, preserving internal blank lines.
+---@param line string
+---@return boolean
+local function is_blank_line(line)
+  return vim.trim(line) == ""
+end
+
+--- Get the command block under the cursor. Blank lines separate blocks.
 ---@return string
+---@return table|nil
 local function get_buffer_text()
   local buf = vim.api.nvim_get_current_buf()
-  local raw = get_raw_buffer_text(buf)
-  local normalized = normalize_buffer_text(raw)
-
   if buf == state.input_buf then
     sync_accepted_suggestion(buf)
-
-    local accepted = state.accepted_suggestion
-    if accepted and accepted.buf == buf then
-      local accepted_text = normalize_buffer_text(accepted.text)
-      if accepted_text ~= "" and accepted_text ~= normalized and accepted.text:sub(1, #raw) == raw then
-        return accepted_text
-      end
-    end
   end
 
-  return normalized
+  local win = vim.api.nvim_get_current_win()
+  if not vim.api.nvim_win_is_valid(win) or vim.api.nvim_win_get_buf(win) ~= buf then
+    return "", nil
+  end
+
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  if #lines == 0 then
+    return "", nil
+  end
+
+  local cursor = vim.api.nvim_win_get_cursor(win)
+  local line_nr = clamp(cursor[1], 1, #lines)
+  if is_blank_line(lines[line_nr]) then
+    return "", nil
+  end
+
+  local start_line = line_nr
+  while start_line > 1 and not is_blank_line(lines[start_line - 1]) do
+    start_line = start_line - 1
+  end
+
+  local end_line = line_nr
+  while end_line < #lines and not is_blank_line(lines[end_line + 1]) do
+    end_line = end_line + 1
+  end
+
+  local text = table.concat(vim.list_slice(lines, start_line, end_line), "\n")
+  return normalize_buffer_text(text), {
+    start_line = start_line,
+    end_line = end_line,
+  }
 end
 
 --- Get visual selection text
@@ -1329,6 +1571,8 @@ local function mark_nvim_terminal_active(terminal)
   if sync_nvim_sidebar then
     sync_nvim_sidebar()
   end
+
+  schedule_persist_session()
 end
 
 ---@param left table|nil
@@ -1390,6 +1634,8 @@ local function remove_nvim_terminal(terminal_id)
       break
     end
   end
+
+  schedule_persist_session()
 end
 
 ---@return table|nil
@@ -1869,8 +2115,10 @@ show_nvim_terminal = function(terminal)
   return true
 end
 
+---@param opts table|nil
 ---@return table|nil
-local function create_nvim_terminal()
+local function create_nvim_terminal(opts)
+  opts = opts or {}
   prune_nvim_terminals()
 
   local visible = get_visible_nvim_terminal()
@@ -1880,10 +2128,17 @@ local function create_nvim_terminal()
     visible.win = nil
   end
 
-  state.next_terminal_id = state.next_terminal_id + 1
+  local terminal_id = math.floor(tonumber(opts.terminal_id) or 0)
+  if terminal_id <= 0 then
+    state.next_terminal_id = state.next_terminal_id + 1
+    terminal_id = state.next_terminal_id
+  else
+    state.next_terminal_id = math.max(state.next_terminal_id, terminal_id)
+  end
+
   local terminal = {
-    id = state.next_terminal_id,
-    created_seq = state.next_terminal_id,
+    id = terminal_id,
+    created_seq = terminal_id,
     last_used_seq = 0,
   }
 
@@ -1905,9 +2160,70 @@ local function create_nvim_terminal()
 end
 
 ---@param opts table|nil
+local function restore_persisted_nvim_session(opts)
+  opts = opts or {}
+
+  if state.session_restored then
+    return
+  end
+  state.session_restored = true
+
+  if not persistence_enabled() or type(state.persisted_session) ~= "table" then
+    return
+  end
+
+  local persisted_next_id = math.floor(tonumber(state.persisted_session.next_terminal_id) or 0)
+  if persisted_next_id > state.next_terminal_id then
+    state.next_terminal_id = persisted_next_id
+  end
+
+  if config.options.backend == "tmux" or not nvim_terminal.is_available() or #state.nvim_terminals > 0 then
+    return
+  end
+
+  local ids = persisted_terminal_ids()
+  if #ids == 0 then
+    return
+  end
+
+  local target_id = persisted_current_terminal_id(ids)
+  local keep_visible = opts.show_current == true
+  state.persist_suspended = true
+
+  local ok_restore, _ = pcall(function()
+    for _, terminal_id in ipairs(ids) do
+      create_nvim_terminal({ terminal_id = terminal_id })
+    end
+
+    if target_id then
+      local target = find_nvim_terminal(target_id)
+      if target then
+        if not target.win or not vim.api.nvim_win_is_valid(target.win) then
+          show_nvim_terminal(target)
+        else
+          mark_nvim_terminal_active(target)
+        end
+
+        if not keep_visible and target.win and vim.api.nvim_win_is_valid(target.win) then
+          nvim_terminal.hide(target)
+          mark_nvim_terminal_active(target)
+        end
+      end
+    end
+  end)
+
+  state.persist_suspended = false
+
+  if not ok_restore then
+    prune_nvim_terminals()
+  end
+end
+
+---@param opts table|nil
 ---@return table|nil
 local function ensure_nvim_terminal(opts)
   opts = opts or {}
+  restore_persisted_nvim_session({ show_current = opts.show or opts.new_terminal })
 
   local terminal = nil
   if opts.new_terminal then
@@ -2030,11 +2346,13 @@ local function build_command_blocks(text)
   local current_block = {}
 
   for _, line in ipairs(lines) do
-    table.insert(current_block, line)
-    local trimmed = vim.trim(line)
-    if trimmed:sub(-1) ~= "\\" then
-      table.insert(blocks, table.concat(current_block, "\n"))
-      current_block = {}
+    if is_blank_line(line) then
+      if #current_block > 0 then
+        table.insert(blocks, table.concat(current_block, "\n"))
+        current_block = {}
+      end
+    else
+      table.insert(current_block, line)
     end
   end
 
@@ -2045,10 +2363,83 @@ local function build_command_blocks(text)
   return blocks
 end
 
+---@param range table|nil
+local function clear_buffer(range)
+  if not config.options.clear_input or not range then
+    return
+  end
+
+  local buf = vim.api.nvim_get_current_buf()
+  local win = vim.api.nvim_get_current_win()
+  if not vim.api.nvim_buf_is_valid(buf) or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+
+  clear_accepted_suggestion(buf)
+  vim.api.nvim_buf_set_lines(buf, range.start_line - 1, range.end_line, false, {})
+
+  if vim.api.nvim_buf_line_count(buf) == 0 then
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "" })
+  end
+
+  local target_line = math.min(range.start_line, vim.api.nvim_buf_line_count(buf))
+  local target_text = vim.api.nvim_buf_get_lines(buf, target_line - 1, target_line, false)[1] or ""
+  vim.api.nvim_win_set_cursor(win, { target_line, math.min(vim.api.nvim_win_get_cursor(win)[2], #target_text) })
+
+  if buf == state.input_buf then
+    refresh_input_buffer_state(buf, win)
+    schedule_persist_session()
+  end
+end
+
+---@param text string
+local function send_to_terminal(text)
+  if text == "" then
+    return
+  end
+
+  local active_backend = get_active_backend()
+
+  local backend = active_backend
+  local target = nil
+  if backend == "tmux" then
+    target = state.terminal_pane_id
+  elseif backend == "nvim" then
+    target = get_current_nvim_terminal()
+  else
+    backend, target = ensure_managed_terminal()
+  end
+
+  if not backend then
+    return
+  end
+
+  send_to_target(backend, target, text)
+end
+
+--- Temporarily resize nvim pane to 50% for search, save original height
+local function expand_nvim_pane_for_search()
+  if get_active_backend() ~= "tmux" or not state.nvim_pane_id then
+    return
+  end
+
+  state._saved_nvim_height = tmux.get_pane_height(state.nvim_pane_id)
+  tmux.resize_pane_percent(state.nvim_pane_id, 50)
+end
+
+--- Restore nvim pane to original height after search
+local function restore_nvim_pane_size()
+  if get_active_backend() ~= "tmux" or not state.nvim_pane_id or not state._saved_nvim_height then
+    return
+  end
+
+  tmux.resize_pane_rows(state.nvim_pane_id, state._saved_nvim_height)
+  state._saved_nvim_height = nil
+end
 ---@param backend string
 ---@param target string|table|nil
 ---@param text string
-local function send_to_target(backend, target, text)
+send_to_target = function(backend, target, text)
   if text == "" then
     return
   end
@@ -2126,63 +2517,6 @@ local function send_to_target(backend, target, text)
   end
 end
 
----@param text string
-local function send_to_terminal(text)
-  if text == "" then
-    return
-  end
-
-  local active_backend = get_active_backend()
-
-  local backend = active_backend
-  local target = nil
-  if backend == "tmux" then
-    target = state.terminal_pane_id
-  elseif backend == "nvim" then
-    target = get_current_nvim_terminal()
-  else
-    backend, target = ensure_managed_terminal()
-  end
-
-  if not backend then
-    return
-  end
-
-  send_to_target(backend, target, text)
-end
-
---- Clear the buffer content
-local function clear_buffer()
-  if config.options.clear_input then
-    clear_accepted_suggestion(0)
-    set_buffer_text(0, "")
-    vim.api.nvim_win_set_cursor(0, { 1, 0 })
-    if vim.api.nvim_get_current_buf() == state.input_buf then
-      render_input_autosuggestion(0, vim.api.nvim_get_current_win())
-    end
-  end
-end
-
---- Temporarily resize nvim pane to 50% for search, save original height
-local function expand_nvim_pane_for_search()
-  if get_active_backend() ~= "tmux" or not state.nvim_pane_id then
-    return
-  end
-
-  state._saved_nvim_height = tmux.get_pane_height(state.nvim_pane_id)
-  tmux.resize_pane_percent(state.nvim_pane_id, 50)
-end
-
---- Restore nvim pane to original height after search
-local function restore_nvim_pane_size()
-  if get_active_backend() ~= "tmux" or not state.nvim_pane_id or not state._saved_nvim_height then
-    return
-  end
-
-  tmux.resize_pane_rows(state.nvim_pane_id, state._saved_nvim_height)
-  state._saved_nvim_height = nil
-end
-
 ensure_history_loaded = function()
   if #state.history == 0 then
     state.history = dedupe_history(load_zsh_history())
@@ -2246,6 +2580,7 @@ function M.open()
   if not state.is_open then
     state.is_open = true
     apply_minimal_ui()
+    schedule_persist_session()
   end
 
   local win = show_input_buffer()
@@ -2296,6 +2631,7 @@ function M.new_terminal()
   if not state.is_open then
     state.is_open = true
     apply_minimal_ui()
+    schedule_persist_session()
   end
 
   local win = show_input_buffer()
@@ -2327,6 +2663,7 @@ function M.hide()
   nvim_terminal.hide(terminal)
   sync_current_nvim_state(terminal)
   close_nvim_sidebar()
+  schedule_persist_session()
   notify("Terminal pane hidden.")
 end
 
@@ -2370,6 +2707,7 @@ function M.close()
     state.input_win = nil
   end
 
+  schedule_persist_session()
   notify("Terminal pane closed.")
 end
 
@@ -2395,9 +2733,9 @@ function M.toggle()
   end
 end
 
---- Send all commands in the current buffer to terminal, keep current mode
+--- Send the command block under the cursor to the terminal, keep current mode
 function M.send_buffer()
-  local text = get_buffer_text()
+  local text, range = get_buffer_text()
   if text == "" then
     return
   end
@@ -2408,7 +2746,7 @@ function M.send_buffer()
 
   add_to_history(text)
   send_to_terminal(text)
-  clear_buffer()
+  clear_buffer(range)
 end
 
 --- Send visual selection to terminal
@@ -2911,6 +3249,16 @@ end
 function M._setup_buffer_keymaps(buf)
   local opts = { buffer = buf, noremap = true, silent = true }
   local keymap = config.options.keymap
+  local function schedule_send_buffer()
+    local target_buf = buf
+    vim.schedule(function()
+      if not vim.api.nvim_buf_is_valid(target_buf) or vim.api.nvim_get_current_buf() ~= target_buf then
+        return
+      end
+      M.send_buffer()
+    end)
+  end
+
   local function with_input_context(callback)
     return function()
       local win = vim.api.nvim_get_current_win()
@@ -2925,7 +3273,7 @@ function M._setup_buffer_keymaps(buf)
 
   vim.keymap.set("n", keymap.send_line, function()
     M.send_buffer()
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands" }))
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block" }))
 
   vim.keymap.set("v", keymap.send_visual, function()
     local visual_type = vim.fn.visualmode()
@@ -2937,19 +3285,13 @@ function M._setup_buffer_keymaps(buf)
 
   vim.keymap.set("i", keymap.send_line, function()
     if config.options.completion.enabled and vim.fn.pumvisible() == 1 then
-      local target_buf = buf
       zsh_completion.dismiss()
-      vim.schedule(function()
-        if not vim.api.nvim_buf_is_valid(target_buf) or vim.api.nvim_get_current_buf() ~= target_buf then
-          return
-        end
-        M.send_buffer()
-      end)
+      schedule_send_buffer()
       return
     end
 
-    M.send_buffer()
-  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send all buffer commands (insert mode)" }))
+    schedule_send_buffer()
+  end, vim.tbl_extend("force", opts, { desc = "TerminalMate: Send current command block (insert mode)" }))
 
   vim.keymap.set("i", "<C-a>", with_input_context(function(win, ctx)
     vim.api.nvim_win_set_cursor(win, { ctx.line_nr, 0 })
@@ -3187,6 +3529,7 @@ local function setup_autocmds()
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = group,
     callback = function()
+      persist_session_now()
       zsh_completion.stop()
     end,
   })
@@ -3238,6 +3581,11 @@ end
 ---@param opts table|nil
 function M.setup(opts)
   config.setup(opts)
+  state.persisted_session = load_persisted_session()
+  state.session_restored = false
+  state.restored_input = false
+  state.persist_generation = 0
+  state.persist_suspended = false
   zsh_completion.setup(vim.tbl_extend("force", {}, config.options.completion, {
     cwd_resolver = resolve_completion_cwd,
   }))

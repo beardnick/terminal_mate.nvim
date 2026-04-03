@@ -9,9 +9,10 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 - **Neovim-first backend**: `backend = "auto"` prefers Neovim's built-in terminal and falls back to tmux when needed.
 - **Stable terminal layout**: Managed Neovim terminals open in a dedicated split below the editor by default and can also live in a dedicated TerminalMate tab workspace.
 - **Multiple terminal instances**: Create multiple managed Neovim terminals and keep sending to the most recently active one.
+- **Session persistence by default**: TerminalMate restores managed Neovim terminal instances and the input buffer content on the next open.
 - **Slim terminal list sidebar**: Managed Neovim terminals get a compact right-side list with `#id + cwd` tail labels, active-row emphasis, and click/`Enter` switching.
 - **Guarded dedicated windows**: Input, terminal, and sidebar windows automatically restore their intended buffers if another command steals the window.
-- **Send Entire Buffer**: Press `Ctrl+S` to send all commands in the buffer at once, then clear the input buffer automatically.
+- **Cursor-local command blocks**: Press `Ctrl+S` to send only the non-empty command block under the cursor; blank lines separate blocks.
 - **Send Visual Selections From Anywhere**: Use the visual send action in any buffer, regardless of filetype.
 - **Terminal Control**: Create, hide, clear, or interrupt terminals without leaving the input buffer.
 - **Zsh History Integration**: Browse and search your zsh/bash history directly from the input buffer.
@@ -58,8 +59,9 @@ A Neovim plugin that provides a [Warp](https://www.warp.dev/)-like terminal work
 12. Common insert-mode editing keys follow command-line habits such as `<C-a>`, `<C-e>`, `<C-w>`, `<C-u>`, `<C-k>`, and `<M-b>` / `<M-f>`.
 13. Press `Ctrl+G` to search cheatsheets by description, then expand a template into jumpable placeholders inside the input buffer.
 14. Use `<Tab>` / `<S-Tab>` to jump between cheatsheet placeholders when no popup menu is visible.
-15. Press `Ctrl+S` to send the buffer to the latest active terminal.
-16. The buffer is cleared and you stay ready for the next command.
+15. Press `Ctrl+S` to send the command block under the cursor to the latest active terminal.
+16. Blank lines separate blocks, so multi-command buffers can be staged and sent block by block.
+17. By default the input buffer stays intact after sending; enable `clear_input` if you want the active block removed after each send.
 
 ### Managing Multiple Terminals
 
@@ -230,11 +232,18 @@ require("terminal_mate").setup({
   shell = nil,
   -- Close managed tmux panes when exiting Neovim.
   close_on_exit = true,
-  -- Clear the input buffer after sending commands.
-  clear_input = true,
+  -- Remove the active command block after sending. Disabled by default.
+  clear_input = false,
   -- Enable zsh shell integration for TerminalMate-managed Neovim terminals.
   shell_integration = {
     enabled = true,
+  },
+  -- Persist managed Neovim terminals and input buffer text across sessions.
+  persistence = {
+    enabled = true,
+    -- nil = stdpath("state") .. "/terminal_mate/session.json"
+    path = nil,
+    debounce_ms = 150,
   },
 
   keymap = {

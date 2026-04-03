@@ -7,6 +7,7 @@
 ---@field auto_scroll boolean Auto scroll terminal pane to bottom after sending
 ---@field clear_input boolean Clear the input buffer after sending
 ---@field shell_integration TerminalMateShellIntegration
+---@field persistence TerminalMatePersistence
 ---@field keymap TerminalMateKeymap
 ---@field buffer TerminalMateBuffer
 ---@field completion TerminalMateCompletion
@@ -49,6 +50,11 @@
 ---@class TerminalMateShellIntegration
 ---@field enabled boolean Enable shell integration for TerminalMate-managed Neovim terminals when supported
 
+---@class TerminalMatePersistence
+---@field enabled boolean Persist TerminalMate terminals and input buffer content across sessions
+---@field path string|nil Path to the session state file (nil = stdpath("state") .. "/terminal_mate/session.json")
+---@field debounce_ms number Delay before writing state updates to disk
+
 ---@class TerminalMateCheatsheets
 ---@field path string|nil Path to the Lua file that returns cheatsheet entries
 ---@field debounce_ms number Delay before refreshing cheatsheet variable completion
@@ -62,9 +68,14 @@ M.defaults = {
   shell = nil,
   close_on_exit = true,
   auto_scroll = true,
-  clear_input = true,
+  clear_input = false,
   shell_integration = {
     enabled = true,
+  },
+  persistence = {
+    enabled = true,
+    path = nil,
+    debounce_ms = 150,
   },
   completion = {
     enabled = true,
@@ -135,6 +146,14 @@ function M.setup(opts)
 
   if type(M.options.shell_integration.enabled) ~= "boolean" then
     error("terminal_mate: shell_integration.enabled must be a boolean")
+  end
+
+  if type(M.options.persistence.enabled) ~= "boolean" then
+    error("terminal_mate: persistence.enabled must be a boolean")
+  end
+
+  if type(M.options.persistence.debounce_ms) ~= "number" or M.options.persistence.debounce_ms < 0 then
+    error("terminal_mate: persistence.debounce_ms must be a non-negative number")
   end
 end
 
